@@ -180,3 +180,17 @@ test('mapCursor works across brailleRange/markdownRange, same as it does for lat
 	const mapped = doc.mapCursor('brailleRange', 'markdownRange', secondNode.brailleRange.start + 1);
 	assert.ok(mapped >= secondNode.markdownRange.start && mapped <= secondNode.markdownRange.end);
 });
+
+// Regression (PR #23 review): a whitespace-only run between two inline spans was
+// dropped on import, gluing the words together in the braille.
+test('fromMarkdown() keeps the single space between adjacent inline spans', async () => {
+	const forward = async (t) => t.toUpperCase();
+	for (const [md, expected] of [
+		['**bold** *italic*', "^7BOLD^' .7ITALIC.'"],
+		['*a* *b* *c*', ".7A.' .7B.' .7C.'"],
+		['  **bold**  ', "^7BOLD^'"] // padding at the paragraph's ends is still dropped
+	]) {
+		const doc = await DualDocument.fromMarkdown(md, { table: 'en-ueb-g2.ctb', translate: async (t) => t, translateForward: forward });
+		assert.equal(doc.brailleText, expected, md);
+	}
+});

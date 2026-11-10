@@ -1068,10 +1068,20 @@ async function buildParaFromMarkdown(paraNode, paraSource, table, forward) {
 		return;
 	}
 
-	for (const segment of segmentMarkdown(paraSource)) {
+	const segments = segmentMarkdown(paraSource);
+	for (const [index, segment] of segments.entries()) {
 		const text = segment.text;
 		if (segment.type === 'text') {
-			if (text.trim() === '') continue;
+			if (text.trim() === '') {
+				// Whitespace-only run. At the very start/end of the paragraph it's just
+				// padding, so drop it; BETWEEN two spans (e.g. "**bold** *italic*") it's
+				// the only thing separating the words, and dropping it glued them
+				// together in the braille. Keep it as a single space (a space is the
+				// same byte in braille ASCII, so no forward-translation is needed).
+				const isInterior = index > 0 && index < segments.length - 1;
+				if (isInterior) paraNode.push(tokens.STRING).set_value(' ');
+				continue;
+			}
 			const child = paraNode.push(tokens.STRING);
 			child.set_value(await forward(text, table));
 		} else if (MARKDOWN_SEGMENT_TOKEN[segment.type]) {
