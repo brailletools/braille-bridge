@@ -43,16 +43,13 @@ test('renderMarkdown() renders a plain paragraph and is not auto-updated by appl
 });
 
 test('to_markdown() renders BOLD as ** and ITALIC as * markers', async () => {
-	// Marker-word-then-plain-word order (matching document.test.js's proven
-	// '_.CAN_. DOG' fixture) keeps BOLD/ITALIC as the PARA's own direct child
-	// rather than nesting under a still-open STRING sibling — a separate,
-	// pre-existing lexer characteristic unrelated to Markdown rendering, not
-	// something this test is meant to exercise.
-	const boldDoc = await makeDoc('_.CAN_. DOG');
+	// Word-scope real UEB markers ("^1"/".1") -- each auto-closes at the end of
+	// "CAN"/"RUN" with no separate closing marker needed.
+	const boldDoc = await makeDoc('^1CAN DOG');
 	const boldMd = await boldDoc.renderMarkdown();
 	assert.match(boldMd, /\*\*[^*]+\*\*/, 'expected a **...** bold span');
 
-	const italicDoc = await makeDoc('_/RUN_/ FAST');
+	const italicDoc = await makeDoc('.1RUN FAST');
 	const italicMd = await italicDoc.renderMarkdown();
 	assert.match(italicMd, /(?<!\*)\*[^*]+\*(?!\*)/, 'expected a *...* italic span');
 });
@@ -72,7 +69,9 @@ test('fromMarkdown() parses bold/italic/math into distinct node types', async ()
 	assert.ok(tokenTypes.includes('BOLD'));
 	assert.ok(tokenTypes.includes('ITALIC'));
 	assert.ok(tokenTypes.includes('NEMETH'));
-	assert.match(doc.brailleText, /_\.[^_]*_\./, 'bold should be wrapped in braille BOLD markers');
+	// fromMarkdown() always encodes imported spans as passage scope ("^7"..."^'"
+	// for bold), regardless of length -- see brailleTextOf()'s doc comment.
+	assert.match(doc.brailleText, /\^7[^^]*\^'/, 'bold should be wrapped in braille passage-scope BOLD markers');
 	assert.match(doc.brailleText, /_%[^_]*_:/, 'math should be wrapped in braille NEMETH markers');
 });
 

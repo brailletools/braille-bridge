@@ -31,13 +31,14 @@ async function translate(unicodeBraille, table) {
 	}).replace(/\r?\n+$/, '');
 }
 
-test('a BOLD span following plain text in the same paragraph is a PARA-level sibling, not nested under STRING', async () => {
-	// "hello _.WORLD_. there" -- WORLD is bold, and comes after "hello " has
-	// already opened a STRING node. Before the fix, the BOLD marker nested as a
+test('a word-scope BOLD span following plain text in the same paragraph is a PARA-level sibling, not nested under STRING', async () => {
+	// "hello ^1WORLD there" -- WORLD is bold (word scope, auto-closes with no
+	// separate marker), and comes after "hello " has already opened a STRING
+	// node. Before the fix, a marker appearing after plain text nested as a
 	// CHILD of that STRING node (to_latex()'s STRING case never recurses into
 	// .children, so the whole word vanished). applyMarker() now closes STRING
 	// before opening BOLD, so BOLD is a sibling instead.
-	const tree = lex('hello _.WORLD_. there');
+	const tree = lex('hello ^1WORLD there');
 	const para = tree.children[0];
 	assert.equal(para.children.length, 3, 'STRING("hello "), BOLD("world"), STRING(" there")');
 	assert.equal(para.children[0].token, 'STRING');
@@ -49,8 +50,8 @@ test('a BOLD span following plain text in the same paragraph is a PARA-level sib
 	assert.match(latex, /hello.*\\textbf\{[^}]*\}.*there/s, 'plain text on both sides must survive too');
 });
 
-test('an ITALIC span following plain text in the same paragraph is a PARA-level sibling, not nested under STRING', async () => {
-	const tree = lex('hello _/WORLD_/ there');
+test('a word-scope ITALIC span following plain text in the same paragraph is a PARA-level sibling, not nested under STRING', async () => {
+	const tree = lex('hello .1WORLD there');
 	const para = tree.children[0];
 	assert.equal(para.children.length, 3);
 	assert.equal(para.children[1].token, 'ITALIC');
@@ -59,8 +60,8 @@ test('an ITALIC span following plain text in the same paragraph is a PARA-level 
 	assert.match(latex, /\\textit\{[^}]*\}/, 'italic content must survive, wrapped in \\textit{}');
 });
 
-test('a BOLD span at the very end of a paragraph (nothing after it) survives', async () => {
-	const tree = lex('hello _.WORLD_.');
+test('a word-scope BOLD span at the very end of a paragraph (nothing after it) survives', async () => {
+	const tree = lex('hello ^1WORLD');
 	const para = tree.children[0];
 	assert.equal(para.children.length, 2, 'STRING("hello "), BOLD("world")');
 
@@ -68,19 +69,19 @@ test('a BOLD span at the very end of a paragraph (nothing after it) survives', a
 	assert.match(latex, /\\textbf\{[^}]*\}/, 'trailing bold content must survive');
 });
 
-test('a space appears between a leading BOLD/ITALIC span and the text that follows it', async () => {
-	// "_.HELLO_. world" -- BOLD is first in the paragraph, so it was already a
+test('a space appears between a leading word-scope BOLD span and the text that follows it', async () => {
+	// "^1HELLO world" -- BOLD is first in the paragraph, so it was already a
 	// correct PARA-level sibling even before the fix -- but the space between
 	// it and the next word used to be silently lost (the trailing-space check
 	// only fired for currentToken types STRING/NEMETH/BOLD/ITALIC, and
 	// immediately after a span closes, currentToken is back to PARA).
-	const tree = lex('_.HELLO_. world');
+	const tree = lex('^1HELLO world');
 	const latex = await tree.to_latex('en-ueb-g2.ctb', translate);
 	assert.match(latex, /\\textbf\{[^}]*\} \S/, 'a space must separate the bold span from "world"');
 });
 
-test('two marker spans back-to-back, separated only by whitespace in the source, both survive with a separator', async () => {
-	const tree = lex('_.BOLD_. _/ITALIC_/');
+test('two word-scope marker spans back-to-back, separated only by whitespace in the source, both survive with a separator', async () => {
+	const tree = lex("^1BOLD .1ITALIC");
 	const para = tree.children[0];
 	assert.equal(para.children.length, 2);
 	assert.equal(para.children[0].token, 'BOLD');
@@ -91,8 +92,10 @@ test('two marker spans back-to-back, separated only by whitespace in the source,
 	assert.match(latex, /\\textit\{[^}]*\}/);
 });
 
-test('ITALIC nested inside BOLD is preserved as a child span, not dropped', async () => {
-	const tree = lex('_.bold _/and italic_/ together_.');
+test('a word-scope ITALIC nested inside a passage-scope BOLD is preserved as a child span, not dropped', async () => {
+	// Passage scope ("^7"..."^'") is needed for the outer BOLD since it spans
+	// three words ("bold", "and", "together") -- word scope only covers one.
+	const tree = lex("^7bold .1and together^'");
 	const para = tree.children[0];
 	assert.equal(para.children.length, 1);
 	assert.equal(para.children[0].token, 'BOLD');

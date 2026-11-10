@@ -65,14 +65,15 @@ function extractMathBody(latexSlice) {
 	return s;
 }
 
-// Crude \textbf{}/\textit{} unwrap for editing prose from the LaTeX pane. Does not
-// reconstruct BOLD/ITALIC node structure — editing markup from the LaTeX side
-// currently degrades that node to plain text on the braille side. Documented
-// phase-1 limitation, not a bug: full LaTeX markup round-tripping would need a real
-// LaTeX parser, which nothing in this dependency graph provides.
+// Crude \textbf{}/\textit{}/\underline{} unwrap for editing prose from the LaTeX
+// pane. Does not reconstruct BOLD/ITALIC/UNDERLINE node structure — editing
+// markup from the LaTeX side currently degrades that node to plain text on the
+// braille side. Documented phase-1 limitation, not a bug: full LaTeX markup
+// round-tripping would need a real LaTeX parser, which nothing in this
+// dependency graph provides.
 function stripProseMarkup(latexSlice) {
 	return stripTrailingBlankLines(latexSlice)
-		.replace(/\\text(?:bf|it)\{/g, '')
+		.replace(/\\(?:text(?:bf|it)|underline)\{/g, '')
 		.replace(/}/g, '');
 }
 
@@ -140,13 +141,17 @@ async function regenerateParaBraille(latexText, table, forward) {
 	return parts.join('');
 }
 
-// Markdown-pane mirror of stripProseMarkup() above: crude **bold**/*italic*
-// unwrap for editing prose from the Markdown pane. Same documented phase-1
-// limitation — doesn't reconstruct BOLD/ITALIC node structure, so editing
-// markup from the Markdown side degrades that node to plain text on the
-// braille side, same as editing \textbf{}/\textit{} from the LaTeX side does.
+// Markdown-pane mirror of stripProseMarkup() above: crude **bold**/*italic*/
+// [text]{.underline} unwrap for editing prose from the Markdown pane. Same
+// documented phase-1 limitation — doesn't reconstruct BOLD/ITALIC/UNDERLINE node
+// structure, so editing markup from the Markdown side degrades that node to
+// plain text on the braille side, same as editing \textbf{}/\textit{}/
+// \underline{} from the LaTeX side does. Underline's bracket wrapper must be
+// stripped before the bold/italic markers, in case a bold/italic span is nested
+// inside it (e.g. "[**bold**]{.underline}").
 function stripMarkdownMarkup(markdownSlice) {
 	return stripTrailingBlankLines(markdownSlice)
+		.replace(/\[([^\]]*)\]\{\.underline\}/g, '$1')
 		.replace(/\*\*/g, '')
 		.replace(/\*/g, '');
 }

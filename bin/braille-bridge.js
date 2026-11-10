@@ -26,6 +26,12 @@
 //   --full-doc                          wrap output in a complete document
 //                                        (hand-rolled for latex/markdown; Pandoc's
 //                                        `standalone` option for other formats)
+//   --line-paragraphs                   treat every line of the BRF as its own
+//                                        paragraph, so you don't need blank lines
+//                                        between them (LaTeX/Markdown only break
+//                                        paragraphs on a blank line). Off by default:
+//                                        hard-wrapped BRFs use single newlines
+//                                        mid-paragraph.
 //   --braille-only                      skip text back-translation; always emit Unicode braille
 //   -o, --output FILE                   write output to FILE instead of stdout
 //                                        (required for binary formats like docx/odt/pptx/epub)
@@ -65,6 +71,7 @@ function option(names, def) {
 
 const wantFullDoc = flag('--full-doc');
 const brailleOnly = flag('--braille-only');
+const lineParagraphs = flag('--line-paragraphs');
 const table = option(['--table', '--dictionary'], 'en-ueb-g2.ctb');
 const format = option(['--format'], 'latex');
 const outputPath = option(['-o', '--output'], null);
@@ -72,7 +79,7 @@ const filePath = args[0];
 
 if (!filePath) {
 	console.error(
-		'Usage: braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT] [--full-doc] [--braille-only] [-o FILE]'
+		'Usage: braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT] [--full-doc] [--line-paragraphs] [--braille-only] [-o FILE]'
 	);
 	process.exit(1);
 }
@@ -96,13 +103,60 @@ if (!brailleOnly) {
 	}
 }
 
+// lou_translate reads its input a line at a time into a fixed ~2KB buffer and
+// splits any longer line at an arbitrary byte -- mid-way through a 3-byte UTF-8
+// braille cell -- which comes out as garbage like "\1278/" + newline + "\13678/"
+// in the middle of a word. A braille paragraph is one long line, so real files hit
+// this. Cap each line it sees (in UTF-8 bytes), splitting only at spaces.
+const MAX_LOU_LINE_BYTES = 1500;
+
+function splitForLouTranslate(text) {
+	// Returns the lines to send, plus, per original line, how many of them it became
+	// (so overlong lines can be rejoined with a space afterwards).
+	const lines = [];
+	const counts = [];
+	for (const original of text.split('\n')) {
+		let n = 0;
+		let current = '';
+		// Words arrive separated by U+2800 (blank braille cell) once ASCII has been
+		// converted to Unicode braille, or by a plain space -- split on either. The
+		// separator itself is dropped at a chunk boundary and restored as ' ' on
+		// rejoin (same as lou_translate's own output for either blank).
+		for (const word of original.split(/[ \u2800]/)) {
+			const candidate = current === '' && n === 0 ? word : current + '\u2800' + word;
+			if (current !== '' && Buffer.byteLength(candidate) > MAX_LOU_LINE_BYTES) {
+				lines.push(current);
+				n++;
+				current = word;
+			} else {
+				current = candidate;
+			}
+		}
+		lines.push(current);
+		counts.push(n + 1);
+	}
+	return { lines, counts };
+}
+
 async function translate(unicodeBraille, tbl) {
 	if (!louTranslatePath) return unicodeBraille;
 	try {
-		const result = execFileSync(louTranslatePath, ['--backward', tbl], {
-			input: unicodeBraille,
+		const { lines, counts } = splitForLouTranslate(unicodeBraille);
+		const raw = execFileSync(louTranslatePath, ['--backward', tbl], {
+			input: lines.join('\n'),
 			encoding: 'utf8'
 		});
+		// Stitch the pieces back together: chunks of one original line with ' ',
+		// original line breaks with '\n'.
+		const out = raw.split('\n');
+		let k = 0;
+		const result = counts
+			.map(c => {
+				const piece = out.slice(k, k + c).join(' ');
+				k += c;
+				return piece;
+			})
+			.join('\n');
 		// Strip only a trailing newline (a CLI-output artifact on some platforms/
 		// builds) -- NOT all trailing whitespace. A trailing space can be
 		// meaningful content (e.g. the separator lex() stores at the end of a
@@ -117,7 +171,14 @@ async function translate(unicodeBraille, tbl) {
 
 // ── Convert ──────────────────────────────────────────────────────────────
 
-const raw = readFileSync(filePath, 'utf8');
+let raw = readFileSync(filePath, 'utf8');
+if (lineParagraphs) {
+	// Every non-empty line becomes its own paragraph (lex() splits on blank lines).
+	raw = raw
+		.split(/\r\n|\n|\r/)
+		.filter(line => line.trim() !== '')
+		.join('\n\n');
+}
 
 if (format === 'latex' || format === 'markdown') {
 	const tree = lex(raw);

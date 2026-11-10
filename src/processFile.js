@@ -171,6 +171,24 @@ export async function translateForward(text, table = defaultTable) {
 	return await defaultLiblouisTranslateForward(text, table);
 }
 
+// ASCII Braille spells some cells two ways: `~` (0x7e) and DEL (0x7f) are the same
+// cells as `^` (dots 45) and `_` (dots 456), just like a-z alias A-Z. Many BRF
+// writers emit the aliases, but every marker this module matches ("_%", "_:",
+// "^7", "._" ...) is spelled with the canonical byte, so without this a Nemeth
+// span written "\x7f%...\x7f:" was never recognized and its contents were
+// back-translated as text. Only the two aliases that can appear in a marker (or
+// in Nemeth content, where Abraham expects "^") are rewritten -- `{ | }` alias
+// `[ \ ]`, which no marker uses, so they're left byte-for-byte alone.
+// Assumes standard ASCII-braille aliasing; not verified against NABCC, where some
+// of these bytes may carry different meanings. A strict 1-for-1 character
+// substitution, so every offset into the text (brailleRange, region slices) stays
+// valid -- but note the lexed tree holds the rewritten bytes, so untouched text
+// round-trips with `_`/`^` rather than the file's original `0x7f`/`~`.
+const ASCII_BRAILLE_ALIASES = { '~': '^', '\x7f': '_' };
+export function normalizeAsciiBrailleAliases(text) {
+	return text.replace(/[~\x7f]/g, ch => ASCII_BRAILLE_ALIASES[ch]);
+}
+
 export const tokens = {
 	ROOT: 'ROOT',
 	NEMETH: 'NEMETH',
@@ -179,48 +197,91 @@ export const tokens = {
 	EQUATION: 'EQUATION',
 	BOLD: 'BOLD',
 	ITALIC: 'ITALIC',
+	UNDERLINE: 'UNDERLINE',
 	STRING: 'STRING',
 	PARA: 'PARA'
 };
 
 const tokenStrings = {
 	[tokens.NEMETHSTART]: '_%',
-	[tokens.NEMETHSTOP]: '_:',
-	[tokens.BOLD]: '_.',
-	[tokens.ITALIC]: '_/'
+	[tokens.NEMETHSTOP]: '_:'
 };
+
+// Real UEB typeform indicators -- verified against the actual braille dot patterns
+// by converting them through this repo's own braille2Ascii(): the first cell
+// (which typeform) is bold=dots-45, italic=dots-46, underline=dots-456; the second
+// cell (scope) is single-symbol=dots-23, word=dot-2, passage-begin=dots-2356,
+// terminator=dot-3. This replaced an earlier ad hoc scheme (`_.`/`_/` toggles for
+// bold/italic, no underline at all) that didn't match any real braille standard --
+// a real .brf file using proper UEB typeform indicators didn't parse correctly.
+const TYPEFORM_PREFIX = {
+	[tokens.BOLD]: '^',
+	[tokens.ITALIC]: '.',
+	[tokens.UNDERLINE]: '_'
+};
+const SCOPE_SUFFIX = {
+	symbol: '2',
+	word: '1',
+	passageOpen: '7',
+	passageClose: "'"
+};
+
+// The explicit open/close marker pair for a typeform's passage scope (the only
+// scope with an actual closing marker -- symbol/word auto-close, see applyMarker()).
+// Shared by MARKERS's construction below and by brailleTextOf() (fromMarkdown's
+// reverse direction), which always encodes imported spans as passage scope.
+function passageMarkers(typeform) {
+	const prefix = TYPEFORM_PREFIX[typeform];
+	return { open: prefix + SCOPE_SUFFIX.passageOpen, close: prefix + SCOPE_SUFFIX.passageClose };
+}
 
 // Single source of truth for marker behavior, shared by lex()'s NEMETH-content char
-// loop and its word-based char loop below, and by computeTopLevelBrailleSpans's
-// SPAN_TYPE_FOR_MARKER further down -- each of those previously kept its own
-// near-duplicate switch-case/table, which is exactly how BOLD/ITALIC drifted out of
-// sync with NEMETHSTART's "close an open STRING first" rule (see applyMarker()'s
-// doc comment) and caused bold/italic content to be silently dropped. NEMETHSTART/
+// loop and its word-based char loop below, and by computeTopLevelBrailleSpans
+// further down -- each of those previously kept its own near-duplicate
+// switch-case/table, which is exactly how BOLD/ITALIC drifted out of sync with
+// NEMETHSTART's "close an open STRING first" rule (see applyMarker()'s doc
+// comment) and caused bold/italic content to be silently dropped. NEMETHSTART/
 // NEMETHSTOP are an open/close pair (start always nests one level deeper, stop
-// always closes the nearest NEMETH); BOLD/ITALIC are toggles (close if already the
-// innermost open span, else open one).
+// always closes the nearest NEMETH). Each typeform (BOLD/ITALIC/UNDERLINE) gets
+// four markers: 'symbol'/'word' auto-close (no separate closing marker -- see
+// applyMarker()), and a passage-scope 'open'/'close' pair that behaves exactly
+// like NEMETHSTART/STOP, just keyed per typeform so only a passage-close of the
+// *same* typeform closes an open passage span.
 const MARKERS = {
 	[tokenStrings[tokens.NEMETHSTART]]: { kind: 'open', span: tokens.NEMETH },
-	[tokenStrings[tokens.NEMETHSTOP]]: { kind: 'close', span: tokens.NEMETH },
-	[tokenStrings[tokens.BOLD]]: { kind: 'toggle', span: tokens.BOLD },
-	[tokenStrings[tokens.ITALIC]]: { kind: 'toggle', span: tokens.ITALIC }
+	[tokenStrings[tokens.NEMETHSTOP]]: { kind: 'close', span: tokens.NEMETH }
 };
+for (const typeform of [tokens.BOLD, tokens.ITALIC, tokens.UNDERLINE]) {
+	const prefix = TYPEFORM_PREFIX[typeform];
+	MARKERS[prefix + SCOPE_SUFFIX.symbol] = { kind: 'symbol', span: typeform };
+	MARKERS[prefix + SCOPE_SUFFIX.word] = { kind: 'word', span: typeform };
+	const { open, close } = passageMarkers(typeform);
+	MARKERS[open] = { kind: 'open', span: typeform };
+	MARKERS[close] = { kind: 'close', span: typeform };
+}
 
-// Applies one marker's effect starting from `currentToken`, returning the new
-// current node. Any marker first closes an open STRING node -- previously only
-// NEMETHSTART did this ("Close STRING token if we're in one"), so a BOLD/ITALIC
-// marker appearing after any plain word in the same paragraph nested as a CHILD of
-// the already-open STRING instead of a PARA-level sibling. Element.to_latex()/
-// to_markdown()'s STRING case only ever renders `this.value` and never recurses
-// into `.children`, so that nested span was silently discarded rather than
-// rendered -- this symmetric rule is the actual fix, for every marker type,
-// present and future, not just a patch for BOLD/ITALIC specifically.
+// Applies one marker's effect starting from `currentToken`, returning
+// `{ token, autoClose }` -- the new current node, and (for 'symbol'/'word' kinds)
+// which auto-close rule the caller must apply, since those scopes have no closing
+// marker at all: 'symbol' means "consume exactly the next one character, then pop
+// back immediately, even mid-word"; 'word' means "pop back once the current word
+// is finished, with no marker needed." Both callers below (lex()'s two char loops)
+// implement the actual auto-close, since only they know where a "word" or the
+// "next character" boundary is; this function only decides what *kind* of
+// auto-close is pending.
+//
+// Any marker first closes an open STRING node -- previously only NEMETHSTART did
+// this ("Close STRING token if we're in one"), so a BOLD/ITALIC marker appearing
+// after any plain word in the same paragraph nested as a CHILD of the already-open
+// STRING instead of a PARA-level sibling. Element.to_latex()/to_markdown()'s
+// STRING case only ever renders `this.value` and never recurses into `.children`,
+// so that nested span was silently discarded rather than rendered -- this
+// symmetric rule is the actual fix, for every marker type, present and future.
 function applyMarker(currentToken, marker) {
 	switch (marker.kind) {
 		case 'open':
-			// Always opens a new (possibly nested) span -- close STRING first.
 			if (currentToken.token === tokens.STRING) currentToken = currentToken.parent;
-			return currentToken.push(marker.span);
+			return { token: currentToken.push(marker.span), autoClose: null };
 		case 'close':
 			// Only closes a matching already-open span; a stray close marker with no
 			// matching open (e.g. "abc_:def" with no preceding "_%") is a no-op --
@@ -230,18 +291,46 @@ function applyMarker(currentToken, marker) {
 			// so STRING must NOT be closed for a stray marker that turns out not to
 			// match -- doing so would strand any further text in this word onto the
 			// PARA node's own (never-rendered) .value instead of the still-open STRING.
-			return currentToken.token === marker.span ? currentToken.parent : currentToken;
-		case 'toggle':
-			// Closes if currentToken is already this span (never STRING in that
-			// case, so no STRING-closing needed); otherwise opens a new one, which
-			// -- like 'open' above -- must close STRING first.
-			if (currentToken.token === marker.span) return currentToken.parent;
+			return { token: currentToken.token === marker.span ? currentToken.parent : currentToken, autoClose: null };
+		case 'symbol':
+		case 'word':
 			if (currentToken.token === tokens.STRING) currentToken = currentToken.parent;
-			return currentToken.push(marker.span);
+			return { token: currentToken.push(marker.span), autoClose: marker.kind };
 		default:
-			return currentToken;
+			return { token: currentToken, autoClose: null };
 	}
 }
+
+// Given `text` and `contentStart` (the index right after a symbol/word-scope
+// opening marker), returns where that span's auto-determined content ends.
+// Shared by computeTopLevelBrailleSpans() (the marker-only predictive scanner,
+// which scans raw un-split paragraph text) so it determines auto-close boundaries
+// identically to lex()'s real parsing -- the same "duplicated logic drifts apart"
+// risk that caused the earlier bold/italic content-loss bug (see applyMarker()'s
+// doc comment). lex() itself doesn't need to call this for 'word' scope: it
+// already processes text one `line.split(' ')` word at a time, which by
+// construction contains no spaces, so "auto-close at the end of the word" and
+// "auto-close at the next space" are the same boundary there for free.
+function findAutoCloseEnd(text, contentStart, kind) {
+	if (kind === 'symbol') return Math.min(contentStart + 1, text.length);
+	let end = contentStart;
+	while (end < text.length && text[end] !== ' ' && text[end] !== '\n') end++;
+	return end;
+}
+
+// Render mapping for typeform spans (BOLD/ITALIC/UNDERLINE) -- one shared table
+// instead of a hardcoded switch-branch per type, so to_latex()/to_markdown() have
+// exactly one code path for "a wrapped span." This is deliberate groundwork for a
+// planned future spec-table UI (letting participants view/edit this mapping) --
+// adding a new typeform there only means adding a table row here, not new
+// branches. Markdown's underline uses Pandoc's bracketed-span syntax
+// (`[text]{.underline}`) rather than raw `<u>` HTML, since it round-trips cleanly
+// through the pandoc-wasm pipeline already used for Word export.
+const RENDER_SPEC = {
+	[tokens.BOLD]: { latex: ['\\textbf{', '}'], markdown: ['**', '**'] },
+	[tokens.ITALIC]: { latex: ['\\textit{', '}'], markdown: ['*', '*'] },
+	[tokens.UNDERLINE]: { latex: ['\\underline{', '}'], markdown: ['[', ']{.underline}'] }
+};
 
 class Element {
 	constructor(token, parent = null) {
@@ -433,31 +522,22 @@ class Element {
 				this.add_latex('\n\n');
 				break;
 			case tokens.BOLD:
-				this.add_latex('\\textbf{');
-				if (this.value) this.add_latex(await this.translate_value(table, translate));
-				for (const child of this.children) {
-					try {
-						this.add_latex(await child.to_latex(table, translate));
-					} catch (error) {
-						console.error('[processFile] Error processing BOLD child:', error.message, 'token:', child.token);
-						// Continue processing remaining children
-					}
-				}
-				this.add_latex('}');
-				break;
 			case tokens.ITALIC:
-				this.add_latex('\\textit{');
+			case tokens.UNDERLINE: {
+				const [open, close] = RENDER_SPEC[this.token].latex;
+				this.add_latex(open);
 				if (this.value) this.add_latex(await this.translate_value(table, translate));
 				for (const child of this.children) {
 					try {
 						this.add_latex(await child.to_latex(table, translate));
 					} catch (error) {
-						console.error('[processFile] Error processing ITALIC child:', error.message, 'token:', child.token);
+						console.error('[processFile] Error processing', this.token, 'child:', error.message, 'token:', child.token);
 						// Continue processing remaining children
 					}
 				}
-				this.add_latex('}');
+				this.add_latex(close);
 				break;
+			}
 			case tokens.STRING:
 				if (this.value) this.add_latex(await this.translate_value(table, translate));
 				break;
@@ -534,29 +614,21 @@ class Element {
 				this.add_markdown('\n\n');
 				break;
 			case tokens.BOLD:
-				this.add_markdown('**');
-				if (this.value) this.add_markdown(await this.translate_value(table, translate));
-				for (const child of this.children) {
-					try {
-						this.add_markdown(await child.to_markdown(table, translate));
-					} catch (error) {
-						console.error('[processFile] Error processing BOLD child:', error.message, 'token:', child.token);
-					}
-				}
-				this.add_markdown('**');
-				break;
 			case tokens.ITALIC:
-				this.add_markdown('*');
+			case tokens.UNDERLINE: {
+				const [open, close] = RENDER_SPEC[this.token].markdown;
+				this.add_markdown(open);
 				if (this.value) this.add_markdown(await this.translate_value(table, translate));
 				for (const child of this.children) {
 					try {
 						this.add_markdown(await child.to_markdown(table, translate));
 					} catch (error) {
-						console.error('[processFile] Error processing ITALIC child:', error.message, 'token:', child.token);
+						console.error('[processFile] Error processing', this.token, 'child:', error.message, 'token:', child.token);
 					}
 				}
-				this.add_markdown('*');
+				this.add_markdown(close);
 				break;
+			}
 			case tokens.STRING:
 				if (this.value) this.add_markdown(await this.translate_value(table, translate));
 				break;
@@ -584,41 +656,32 @@ function assignTopLevelBrailleRanges(root, normalizedText) {
 	});
 }
 
-// Maps each toggle-style marker (BOLD/ITALIC -- NEMETHSTART/STOP are handled
-// separately below via their own open/close pair, not through this map) to the
-// span type it opens — 'nemeth'/'bold'/'italic' spans nest (a NEMETH, BOLD, or
-// ITALIC region can contain any of the others); plain content between/outside
-// them is 'text'. Derived from the shared MARKERS table above rather than
-// hand-maintained separately -- see MARKERS's doc comment for why that
-// duplication was the root cause of a real bug.
-const SPAN_TYPE_STRING = {
-	[tokens.NEMETH]: 'nemeth',
-	[tokens.BOLD]: 'bold',
-	[tokens.ITALIC]: 'italic'
-};
-const SPAN_TYPE_FOR_MARKER = Object.fromEntries(
-	Object.entries(MARKERS)
-		.filter(([, marker]) => marker.kind === 'toggle')
-		.map(([markerText, marker]) => [markerText, SPAN_TYPE_STRING[marker.span]])
-);
-
 // A lightweight, marker-only scan of one paragraph's raw braille text, computing
 // the top-level (direct-PARA-child) span boundaries a correctly-formed input
 // would produce, WITHOUT re-running lex()'s word-splitting/character-loop logic.
 // Returns an ordered, gapless, non-overlapping partition of [0, rawParaText.length):
-// [{ type: 'text'|'nemeth'|'bold'|'italic', start, end }, ...].
+// [{ type: <Element token>, start, end }, ...].
 //
-// This mirrors lex()'s marker push/pop rules (verified by hand against the word-
-// and character-based branches there) closely enough to get well-formed input
-// right, but it is deliberately NOT a full reimplementation of the lexer (e.g. it
-// doesn't replicate every pre-existing lexer quirk around markers landing mid-word
-// with no surrounding space). That's fine: assignParaChildBrailleRanges() below
-// cross-checks this scan's output against the real parse tree and discards it on
-// any mismatch, so a wrong guess here only costs the fast path for that one
-// paragraph — see braille2latex#19.
+// Driven entirely by the shared MARKERS table (not a second hand-maintained
+// marker list) so it can't drift out of sync with lex() the way BOLD/ITALIC did
+// before -- see MARKERS's and applyMarker()'s doc comments. 'open'/'close' kinds
+// (NEMETH, and each typeform's passage scope) behave like a stack, exactly
+// mirroring lex()'s nesting; 'symbol'/'word' kinds have no closing marker, so when
+// encountered at the top level (stack empty), their whole extent -- computed via
+// the same findAutoCloseEnd() lex() effectively relies on -- becomes ONE top-level
+// span in a single step. A symbol/word marker encountered while nested (stack not
+// empty) is simply swallowed as part of the enclosing span's content, same as any
+// other plain character.
+//
+// This mirrors lex()'s marker push/pop rules closely enough to get well-formed
+// input right, but it is deliberately NOT a full reimplementation of the lexer.
+// That's fine: assignParaChildBrailleRanges() below cross-checks this scan's
+// output against the real parse tree and discards it on any mismatch, so a wrong
+// guess here only costs the fast path for that one paragraph — see
+// braille2latex#19.
 function computeTopLevelBrailleSpans(rawParaText) {
 	const spans = [];
-	const stack = []; // entries: 'nemeth' | 'bold' | 'italic', innermost last
+	const stack = []; // entries: the marker's `span` token, innermost last
 	let spanStart = 0;
 	let spanType = null; // null until the first character of the current span decides it
 
@@ -632,48 +695,39 @@ function computeTopLevelBrailleSpans(rawParaText) {
 	let i = 0;
 	while (i < rawParaText.length) {
 		const two = rawParaText.substring(i, i + 2);
+		const marker = MARKERS[two];
 
-		if (two === tokenStrings[tokens.NEMETHSTART]) {
+		if (marker && (marker.kind === 'symbol' || marker.kind === 'word') && stack.length === 0) {
+			closeSpanIfOpen(i);
+			const contentEnd = findAutoCloseEnd(rawParaText, i + 2, marker.kind);
+			spans.push({ type: marker.span, start: i, end: contentEnd });
+			i = contentEnd;
+			continue;
+		}
+
+		if (marker && marker.kind === 'open') {
 			if (stack.length === 0) {
 				closeSpanIfOpen(i);
 				spanStart = i;
-				spanType = 'nemeth';
+				spanType = marker.span;
 			}
-			stack.push('nemeth'); // always pushes, even nested inside another NEMETH
+			stack.push(marker.span); // always pushes, even nested inside a same-type span
 			i += 2;
 			continue;
 		}
 
-		if (two === tokenStrings[tokens.NEMETHSTOP]) {
-			if (stack[stack.length - 1] === 'nemeth') stack.pop(); // else: stray marker, no-op
+		if (marker && marker.kind === 'close') {
+			if (stack[stack.length - 1] === marker.span) stack.pop(); // else: stray marker, no-op
 			i += 2;
 			if (stack.length === 0) closeSpanIfOpen(i);
 			continue;
 		}
 
-		const markerType = SPAN_TYPE_FOR_MARKER[two];
-		if (markerType) {
-			if (stack.length === 0) {
-				closeSpanIfOpen(i);
-				spanStart = i;
-				spanType = markerType;
-			}
-			// Toggle relative to the *immediate* top of stack only, matching lex()'s
-			// `currentToken.token === BOLD ? parent : push(BOLD)` (not a deep search).
-			if (stack[stack.length - 1] === markerType) {
-				stack.pop();
-			} else {
-				stack.push(markerType);
-			}
-			i += 2;
-			if (stack.length === 0) closeSpanIfOpen(i);
-			continue;
-		}
-
-		// Plain character — starts a new top-level 'text' span if one isn't already open.
+		// Plain character (or a symbol/word marker swallowed while nested) — starts
+		// a new top-level 'text' (STRING) span if one isn't already open.
 		if (stack.length === 0 && spanType === null) {
 			spanStart = i;
-			spanType = 'text';
+			spanType = tokens.STRING;
 		}
 		i += 1;
 	}
@@ -681,13 +735,6 @@ function computeTopLevelBrailleSpans(rawParaText) {
 
 	return spans;
 }
-
-const TOKEN_FOR_SPAN_TYPE = {
-	text: tokens.STRING,
-	nemeth: tokens.NEMETH,
-	bold: tokens.BOLD,
-	italic: tokens.ITALIC
-};
 
 // Runs computeTopLevelBrailleSpans() and cross-checks it against paraNode's real
 // children (count + token-type-in-order) before trusting it for anything. On a
@@ -702,7 +749,7 @@ function assignParaChildBrailleRanges(paraNode, paraRawText) {
 	const matches =
 		children.length > 0 &&
 		spans.length === children.length &&
-		spans.every((span, i) => TOKEN_FOR_SPAN_TYPE[span.type] === children[i].token);
+		spans.every((span, i) => span.type === children[i].token);
 
 	if (!matches) {
 		paraNode.childRangesReliable = false;
@@ -737,7 +784,7 @@ function assignParaChildBrailleRanges(paraNode, paraRawText) {
 export function lex(text) {
 	if (typeof text !== 'string') throw new Error('Input must be a string');
 
-	text = text.replace(/(\r\n|\n|\r)/g, '\n');
+	text = normalizeAsciiBrailleAliases(text.replace(/(\r\n|\n|\r)/g, '\n'));
 	elementIdCounter = 0;
 
 	const parseTree = new Element(tokens.ROOT);
@@ -763,9 +810,18 @@ export function lex(text) {
 				for (let i = 0; i < line.length; i++) {
 					const firsttwo = line.substring(i, i + 2);
 					const marker = MARKERS[firsttwo];
-					if (marker) {
-						currentToken = applyMarker(currentToken, marker);
-						i++;
+					// Only NEMETHSTART/STOP are recognized inside Nemeth content (to
+					// support nesting) -- typeform markers are deliberately NOT
+					// recognized here. Nemeth math ASCII notation uses the very same
+					// "^"/"."/"_" characters for its own purposes (e.g. "^" for
+					// exponents: latex_to_nemeth('a^2') produces literal "A^2"), so
+					// treating "^2" as a bold-symbol marker inside math would corrupt
+					// real exponents. Nemeth content has its own conventions for
+					// emphasis, if any -- out of scope here.
+					if (marker && marker.span === tokens.NEMETH) {
+						const { token } = applyMarker(currentToken, marker);
+						currentToken = token;
+						i++; // + the loop's own i++ = 2 (marker chars only)
 						continue;
 					}
 					currentToken.add_character(line[i]);
@@ -787,14 +843,15 @@ export function lex(text) {
 
 					// Flush the pending separator now, onto whatever node is about to
 					// receive this word's content: the still-open STRING/BOLD/ITALIC/
-					// NEMETH from a continuing run (e.g. a single-character word mid-
-					// bold-run, or a NEMETH block whose content is line-wrapped across
-					// several "words"), or the STRING just pushed above.
+					// UNDERLINE/NEMETH from a continuing run (e.g. a single-character
+					// word mid-bold-run, or a NEMETH block whose content is line-wrapped
+					// across several "words"), or the STRING just pushed above.
 					if (pendingSpace) {
 						if (
 							currentToken.token === tokens.STRING ||
 							currentToken.token === tokens.BOLD ||
 							currentToken.token === tokens.ITALIC ||
+							currentToken.token === tokens.UNDERLINE ||
 							currentToken.token === tokens.NEMETH
 						) {
 							currentToken.add_character(' ');
@@ -804,15 +861,58 @@ export function lex(text) {
 						pendingSpace = false;
 					}
 
+					// How many word-scope spans were opened while processing this word
+					// (normally 0 or 1, but nested word-scope markers with nothing
+					// between them are possible) -- each needs exactly one auto-close
+					// pop once this word's characters are done, since word scope has no
+					// closing marker at all: it applies to exactly the next word.
+					let wordScopeDepth = 0;
+
 					for (let i = 0; i < word.length; i++) {
 						const firsttwo = word.substring(i, i + 2);
-						const marker = MARKERS[firsttwo];
+						// Same restriction as the NEMETH-content loop above: a NEMETH block
+						// can also open mid-word here (via NEMETHSTART below), and its
+						// remaining content -- still scanned by *this* loop for the rest of
+						// the current line -- must not have typeform markers recognized in
+						// it either, for the same "^2 is a real exponent, not a marker"
+						// reason.
+						const rawMarker = MARKERS[firsttwo];
+						const marker =
+							currentToken.token === tokens.NEMETH && rawMarker && rawMarker.span !== tokens.NEMETH
+								? undefined
+								: rawMarker;
 						if (marker) {
-							currentToken = applyMarker(currentToken, marker);
-							i++;
+							const { token, autoClose } = applyMarker(currentToken, marker);
+							currentToken = token;
+							if (autoClose === 'word') {
+								wordScopeDepth++;
+								i++; // + auto = 2 (marker chars only; content follows normally)
+								continue;
+							}
+							if (autoClose === 'symbol') {
+								const symbolChar = word[i + 2];
+								if (symbolChar !== undefined) currentToken.add_character(symbolChar);
+								currentToken = currentToken.parent;
+								i += 2; // + auto = 3 (2 marker chars + 1 symbol char)
+								continue;
+							}
+							i++; // + auto = 2 (marker chars only)
 							continue;
 						}
+						// A marker (symbol scope closing, or an explicit passage-close)
+						// can pop all the way back to bare PARA mid-word, with more plain
+						// characters of this same word still to come -- start a fresh
+						// STRING to receive them rather than silently writing into PARA's
+						// own (never-rendered) .value.
+						if (currentToken.token === tokens.PARA) {
+							currentToken = currentToken.push(tokens.STRING);
+						}
 						currentToken.add_character(word[i]);
+					}
+
+					while (wordScopeDepth > 0) {
+						currentToken = currentToken.parent;
+						wordScopeDepth--;
 					}
 
 					pendingSpace = true;
@@ -870,6 +970,10 @@ const MARKDOWN_MATH_RE = /\$\$([\s\S]*?)\$\$|\$([^$\n]*)\$/g;
 // this uses a simpler greedy-earliest-match heuristic instead.
 const MARKDOWN_BOLD_RE = /\*\*([\s\S]+?)\*\*/;
 const MARKDOWN_ITALIC_RE = /\*([^*\n]+)\*/;
+// Underline: Pandoc's bracketed-span syntax, matching what to_markdown() emits
+// for UNDERLINE nodes (see RENDER_SPEC) -- not raw <u> HTML, since bracketed
+// spans round-trip cleanly through the pandoc-wasm pipeline.
+const MARKDOWN_UNDERLINE_RE = /\[([^\]\n]+)\]\{\.underline\}/;
 
 // Block-level constructs this parser doesn't model structurally: headings,
 // lists, blockquotes, code fences/indented code, tables, horizontal rules,
@@ -899,6 +1003,7 @@ function segmentMarkdown(paraText) {
 		const mathMatch = MARKDOWN_MATH_RE.exec(rest);
 		const boldMatch = MARKDOWN_BOLD_RE.exec(rest);
 		const italicMatch = MARKDOWN_ITALIC_RE.exec(rest);
+		const underlineMatch = MARKDOWN_UNDERLINE_RE.exec(rest);
 
 		// Pick whichever recognized span starts earliest. This also resolves the
 		// bold-vs-italic ambiguity for e.g. "**bold**": MARKDOWN_ITALIC_RE can
@@ -907,7 +1012,8 @@ function segmentMarkdown(paraText) {
 		const candidates = [
 			mathMatch && { type: 'math', match: mathMatch },
 			boldMatch && { type: 'bold', match: boldMatch },
-			italicMatch && { type: 'italic', match: italicMatch }
+			italicMatch && { type: 'italic', match: italicMatch },
+			underlineMatch && { type: 'underline', match: underlineMatch }
 		].filter(Boolean);
 
 		if (candidates.length === 0) {
@@ -940,8 +1046,16 @@ function flagUnsupported(topLevelNode, message) {
 	topLevelNode.errorMessage = message;
 }
 
-// Builds one PARA Element's children (STRING/BOLD/ITALIC/NEMETH, or a single
-// flagged literal child for unrecognized block-level markdown) from one
+// Maps segmentMarkdown()'s segment.type strings to Element tokens for the
+// typeform cases below.
+const MARKDOWN_SEGMENT_TOKEN = {
+	bold: tokens.BOLD,
+	italic: tokens.ITALIC,
+	underline: tokens.UNDERLINE
+};
+
+// Builds one PARA Element's children (STRING/BOLD/ITALIC/UNDERLINE/NEMETH, or a
+// single flagged literal child for unrecognized block-level markdown) from one
 // blank-line-separated chunk of Markdown source.
 async function buildParaFromMarkdown(paraNode, paraSource, table, forward) {
 	if (MARKDOWN_UNSUPPORTED_BLOCK_RE.test(paraSource)) {
@@ -960,8 +1074,8 @@ async function buildParaFromMarkdown(paraNode, paraSource, table, forward) {
 			if (text.trim() === '') continue;
 			const child = paraNode.push(tokens.STRING);
 			child.set_value(await forward(text, table));
-		} else if (segment.type === 'bold' || segment.type === 'italic') {
-			const child = paraNode.push(segment.type === 'bold' ? tokens.BOLD : tokens.ITALIC);
+		} else if (MARKDOWN_SEGMENT_TOKEN[segment.type]) {
+			const child = paraNode.push(MARKDOWN_SEGMENT_TOKEN[segment.type]);
 			child.set_value(await forward(text, table));
 		} else if (segment.type === 'math') {
 			const child = paraNode.push(tokens.NEMETH);
@@ -980,9 +1094,15 @@ async function buildParaFromMarkdown(paraNode, paraSource, table, forward) {
 }
 
 // Reconstructs the flat, marker-based braille text (the same shape lex()
-// parses -- NEMETHSTART/STOP, BOLD, and ITALIC toggle markers inline) for a
-// PARA/EQUATION node from its already-translated children. The inverse of
-// lex()'s per-word marker scanning, operating on whole children instead.
+// parses -- NEMETHSTART/STOP inline, and each typeform's passage-scope open/close
+// pair) for a PARA/EQUATION node from its already-translated children. The
+// inverse of lex()'s per-word marker scanning, operating on whole children
+// instead. Markdown carries no scope information (a **bold** span could be any
+// length), so every imported BOLD/ITALIC/UNDERLINE span is deliberately encoded
+// as passage scope here regardless of its actual length -- the only scope
+// general enough for arbitrary content. This is a documented default, not full
+// round-trip fidelity: re-exporting an imported document won't recover whether
+// the original braille (if any) had used symbol/word scope instead.
 function brailleTextOf(node) {
 	switch (node.token) {
 		case tokens.PARA:
@@ -991,9 +1111,11 @@ function brailleTextOf(node) {
 		case tokens.NEMETH:
 			return tokenStrings[tokens.NEMETHSTART] + node.get_value() + tokenStrings[tokens.NEMETHSTOP];
 		case tokens.BOLD:
-			return tokenStrings[tokens.BOLD] + node.get_value() + tokenStrings[tokens.BOLD];
 		case tokens.ITALIC:
-			return tokenStrings[tokens.ITALIC] + node.get_value() + tokenStrings[tokens.ITALIC];
+		case tokens.UNDERLINE: {
+			const { open, close } = passageMarkers(node.token);
+			return open + node.get_value() + close;
+		}
 		case tokens.STRING:
 		default:
 			return node.get_value();

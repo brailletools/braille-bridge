@@ -56,6 +56,29 @@ The BRF tokenizer — parses braille (ASCII/NABCC) text into the token tree `Dua
 and `Element.to_latex()`/`to_markdown()` operate on. Exposed for callers who want the
 parsed token tree directly, without going through `DualDocument`.
 
+Recognizes two families of inline markers:
+
+- **Nemeth math**: `_%...text..._:` marks an inline or multi-line Nemeth math block.
+- **UEB typeform indicators** (bold/italic/underline) — the real Unified English Braille
+  scheme, not an ad hoc convention. Each typeform has a one-character prefix (bold `^`,
+  italic `.`, underline `_`) and a one-character scope suffix:
+
+  | | single symbol | word | passage begin | passage end (terminator) |
+  |---|---|---|---|---|
+  | Bold | `^2` | `^1` | `^7` | `^'` |
+  | Italic | `.2` | `.1` | `.7` | `.'` |
+  | Underline | `_2` | `_1` | `_7` | `_'` |
+
+  **Symbol** scope applies to exactly the next character (e.g. `big^2Ddog` bolds only
+  the `D`). **Word** scope applies to the next word and needs no closing marker — it
+  auto-closes at the next space (e.g. `^1WORD rest` bolds only `WORD`). **Passage**
+  scope is an explicit open/close pair that can span any number of words (e.g.
+  `^7several bold words^'`); the terminator is placed unspaced immediately after the
+  last word. These verified against the actual braille dot patterns (bold = dots-45,
+  italic = dots-46, underline = dots-456; symbol = dots-23, word = dot-2, passage-begin
+  = dots-2356, terminator = dot-3) — not liblouis's own back-translation, which doesn't
+  interpret these as formatting on its own; `lex()` recognizes and strips them itself.
+
 ### `fromMarkdown(text, { table?, translateForward? })`
 
 The reverse direction: parses Markdown source into the same token tree shape `lex()`
