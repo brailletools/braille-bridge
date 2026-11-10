@@ -1,0 +1,55 @@
+name: Release
+
+# Runs when a version tag is pushed (git tag vX.Y.Z && git push origin vX.Y.Z).
+# It does not build or deploy anything -- it checks that the tag is a sane release
+# and then publishes a GitHub Release with generated notes. See RELEASING.md.
+#
+# Tags are immutable (a tag ruleset blocks moving/deleting v* tags), and consumers
+# pin them (webeditor clones the tag named in braille-bridge.version), so a bad tag
+# can't be quietly fixed afterwards -- hence validating before publishing.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need main's history to check the tag is on it
+
+      - name: Validate tag
+        run: |
+          set -euo pipefail
+          TAG="$GITHUB_REF_NAME"
+
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH (e.g. v0.3.1)."
+            exit 1
+          fi
+
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "v$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::Tag '$TAG' does not match package.json version '$PKG_VERSION'. Bump the version in a PR, merge it, then tag the merge commit."
+            exit 1
+          fi
+
+          git fetch origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag '$TAG' points at a commit that is not on main. Tag only merged commits."
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --verify-tag
