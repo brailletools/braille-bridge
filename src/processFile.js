@@ -644,15 +644,15 @@ class Element {
 // substring of normalizedText (split('\n\n') loses nothing at this level, unlike
 // the word-rejoining lower in the tree), so these offsets are exact, not
 // approximate.
-function assignTopLevelBrailleRanges(root, normalizedText) {
-	const paragraphs = normalizedText.split('\n\n');
+function assignTopLevelBrailleRanges(root, normalizedText, separator) {
+	const paragraphs = normalizedText.split(separator);
 	let cursor = 0;
 	paragraphs.forEach((para, i) => {
 		const node = root.children[i];
 		if (node) {
 			node.brailleRange = { start: cursor, end: cursor + para.length };
 		}
-		cursor += para.length + 2; // '\n\n' separator
+		cursor += para.length + separator.length;
 	});
 }
 
@@ -781,15 +781,34 @@ function assignParaChildBrailleRanges(paraNode, paraRawText) {
 // and DualDocument sync/error-tracking support for them are real new feature
 // surface, deserving their own scoped plan once house-style indent depths are
 // confirmed against real transcribed files.
-export function lex(text) {
+// Braille paragraph separators. By default a paragraph is a run of lines ended by a
+// blank line ('\n\n'), which is right for hard-wrapped BRFs (a single newline is just
+// a line wrap). `linesAreParagraphs` is for files where every line is its own
+// paragraph (e.g. one answer per line) -- the separator is then a single '\n', so no
+// blank lines are needed to get paragraph breaks in the LaTeX/Markdown. The chosen
+// separator is stored on the tree (`paragraphSeparator`) because DualDocument's range
+// and cursor math, and its incremental re-lexing, all have to agree with it.
+export const PARAGRAPH_SEPARATOR = '\n\n';
+export const LINE_PARAGRAPH_SEPARATOR = '\n';
+export function paragraphSeparatorFor(linesAreParagraphs) {
+	return linesAreParagraphs ? LINE_PARAGRAPH_SEPARATOR : PARAGRAPH_SEPARATOR;
+}
+
+/**
+ * @param {string} text braille (NABCC/ASCII) source
+ * @param {{ linesAreParagraphs?: boolean }} [options]
+ */
+export function lex(text, { linesAreParagraphs = false } = {}) {
 	if (typeof text !== 'string') throw new Error('Input must be a string');
+	const separator = paragraphSeparatorFor(linesAreParagraphs);
 
 	text = normalizeAsciiBrailleAliases(text.replace(/(\r\n|\n|\r)/g, '\n'));
 	elementIdCounter = 0;
 
 	const parseTree = new Element(tokens.ROOT);
+	parseTree.paragraphSeparator = separator;
 
-	const paragraphs = text.split('\n\n');
+	const paragraphs = text.split(separator);
 	paragraphs.forEach(para => {
 		const paraNode = parseTree.push(tokens.PARA);
 		let currentToken = paraNode;
@@ -939,7 +958,7 @@ export function lex(text) {
 		assignParaChildBrailleRanges(paraNode, para);
 	});
 
-	assignTopLevelBrailleRanges(parseTree, text);
+	assignTopLevelBrailleRanges(parseTree, text, separator);
 	parseTree.sourceText = text; // normalized (\n-only) — ranges above are relative to this, not the raw input
 
 	return parseTree;
@@ -1143,16 +1162,21 @@ function brailleTextOf(node) {
  * `errorPane`/`errorMessage` (same shape DualDocument.errors already reads).
  *
  * @param {string} text
- * @param {{ table?: string, translateForward?: (text: string, table: string) => Promise<string> }} [options]
+ * @param {{ table?: string, translateForward?: (text: string, table: string) => Promise<string>, linesAreParagraphs?: boolean }} [options]
+ *   linesAreParagraphs: join the derived braille paragraphs with a single newline instead of a blank
+ *   line (see lex()); newlines *within* a Markdown paragraph (soft wraps) become spaces so they can't
+ *   be mistaken for paragraph breaks.
  */
-export async function fromMarkdown(text, { table = defaultTable, translateForward: forward } = {}) {
+export async function fromMarkdown(text, { table = defaultTable, translateForward: forward, linesAreParagraphs = false } = {}) {
 	if (typeof text !== 'string') throw new Error('Input must be a string');
 	const translateFwd = forward || defaultLiblouisTranslateForward;
 
 	const normalized = text.replace(/(\r\n|\n|\r)/g, '\n');
 	elementIdCounter = 0;
 
+	const separator = paragraphSeparatorFor(linesAreParagraphs);
 	const parseTree = new Element(tokens.ROOT);
+	parseTree.paragraphSeparator = separator;
 	// Markdown source commonly has runs of 2+ blank lines between blocks --
 	// split on any such run, unlike lex()'s exact '\n\n' split (braille
 	// paragraphs are always exactly '\n\n'-separated by construction; Markdown
@@ -1169,13 +1193,15 @@ export async function fromMarkdown(text, { table = defaultTable, translateForwar
 	// Braille is ground truth: derive sourceText/brailleRange the same way
 	// lex()/assignTopLevelBrailleRanges() do, from each top-level node's own
 	// (already-translated) content.
-	const brailleParas = parseTree.children.map(brailleTextOf);
-	parseTree.sourceText = brailleParas.join('\n\n');
+	const brailleParas = parseTree.children.map((node) =>
+		linesAreParagraphs ? brailleTextOf(node).replace(/\n+/g, ' ') : brailleTextOf(node)
+	);
+	parseTree.sourceText = brailleParas.join(separator);
 	let cursor = 0;
 	parseTree.children.forEach((node, i) => {
 		const para = brailleParas[i];
 		node.brailleRange = { start: cursor, end: cursor + para.length };
-		cursor += para.length + 2; // '\n\n' separator
+		cursor += para.length + separator.length;
 	});
 
 	return parseTree;

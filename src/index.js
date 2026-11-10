@@ -6,3 +6,4 @@ export { DualDocument } from './document.js';
 // into anything that merely imports this package; it's only fetched if a consumer
 // actually calls one of these functions.
 export { convertText, convertToBinaryFormat, convertFromBinaryFormat } from './pandoc.js';
+export { wrapLatexDocument, escapeLatexText } from './latexDocument.js';

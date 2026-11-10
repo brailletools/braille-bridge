@@ -11,7 +11,14 @@
 // full-document, not per-character. See processFile.js's assignTopLevelBrailleRanges
 // and the ROOT case of Element.to_latex() for where brailleRange/latexRange come from.
 
-import { lex, fromMarkdown as parseMarkdown, tokens, translateForward as defaultTranslateForward } from './processFile.js';
+import {
+	lex,
+	fromMarkdown as parseMarkdown,
+	tokens,
+	translateForward as defaultTranslateForward,
+	PARAGRAPH_SEPARATOR,
+	LINE_PARAGRAPH_SEPARATOR
+} from './processFile.js';
 import { latex_to_nemeth } from './brailleMap.js';
 
 const defaultTable = 'en-ueb-g2.ctb';
@@ -202,10 +209,12 @@ export class DualDocument {
 	 * configure() to have been called), and translateForward falls back to this
 	 * module's imported translateForward (same requirement).
 	 * @param {string} text
-	 * @param {{ table?: string, translate?: Function, translateForward?: Function }} [options]
+	 * @param {{ table?: string, translate?: Function, translateForward?: Function, linesAreParagraphs?: boolean }} [options]
+	 *   linesAreParagraphs: treat every line as its own paragraph instead of requiring a blank
+	 *   line between paragraphs (see lex()). Sticks to the document for all later edits.
 	 */
-	static async fromBraille(text, { table = defaultTable, translate, translateForward } = {}) {
-		const tree = lex(text);
+	static async fromBraille(text, { table = defaultTable, translate, translateForward, linesAreParagraphs = false } = {}) {
+		const tree = lex(text, { linesAreParagraphs });
 		await tree.to_latex(table, translate);
 		return new DualDocument({ tree, table, translate, translateForward });
 	}
@@ -225,14 +234,29 @@ export class DualDocument {
 	 * @param {string} text
 	 * @param {{ table?: string, translate?: Function, translateForward?: Function }} [options]
 	 */
-	static async fromMarkdown(text, { table = defaultTable, translate, translateForward } = {}) {
-		const tree = await parseMarkdown(text, { table, translateForward });
+	static async fromMarkdown(text, { table = defaultTable, translate, translateForward, linesAreParagraphs = false } = {}) {
+		const tree = await parseMarkdown(text, { table, translateForward, linesAreParagraphs });
 		await tree.to_latex(table, translate);
 		return new DualDocument({ tree, table, translate, translateForward });
 	}
 
 	get brailleText() {
 		return this._tree.sourceText;
+	}
+
+	/** Whether each braille line is its own paragraph (vs. paragraphs separated by blank lines). */
+	get linesAreParagraphs() {
+		return this._tree.paragraphSeparator === LINE_PARAGRAPH_SEPARATOR;
+	}
+
+	// Width of the gap between two top-level braille paragraphs in this document.
+	get _separatorLength() {
+		return (this._tree.paragraphSeparator ?? PARAGRAPH_SEPARATOR).length;
+	}
+
+	// lex() options that keep a re-lexed slice consistent with the rest of the document.
+	get _lexOptions() {
+		return { linesAreParagraphs: this.linesAreParagraphs };
 	}
 
 	/**
@@ -347,7 +371,7 @@ export class DualDocument {
 
 	// Recomputes every top-level node's absolute brailleRange/latexRange from its
 	// own (already-correct) WIDTH, cumulatively — used after any splice so ranges
-	// stay contiguous (latex) / separated by the 2-char '\n\n' (braille) without
+	// stay contiguous (latex) / separated by the paragraph separator (braille; '\n\n', or '\n' in lines-are-paragraphs mode) without
 	// needing per-edit delta-shifting math.
 	_recomputeRanges(brailleText, latexText) {
 		this._tree.sourceText = brailleText;
@@ -359,7 +383,7 @@ export class DualDocument {
 			const lWidth = node.latexRange.end - node.latexRange.start;
 			node.brailleRange = { start: bCursor, end: bCursor + bWidth };
 			node.latexRange = { start: lCursor, end: lCursor + lWidth };
-			bCursor += bWidth + 2; // '\n\n' separator between braille paragraphs
+			bCursor += bWidth + this._separatorLength; // paragraph separator between braille paragraphs
 			lCursor += lWidth; // latex top-level ranges are already contiguous
 		});
 	}
@@ -376,7 +400,7 @@ export class DualDocument {
 			const mWidth = node.markdownRange.end - node.markdownRange.start;
 			node.brailleRange = { start: bCursor, end: bCursor + bWidth };
 			node.markdownRange = { start: mCursor, end: mCursor + mWidth };
-			bCursor += bWidth + 2; // '\n\n' separator between braille paragraphs
+			bCursor += bWidth + this._separatorLength; // paragraph separator between braille paragraphs
 			mCursor += mWidth; // markdown top-level ranges are already contiguous
 		});
 	}
@@ -431,7 +455,7 @@ export class DualDocument {
 		const regionBrailleNewEnd = regionBrailleOldEnd + delta;
 		const regionSlice = newBrailleText.slice(regionBrailleStart, regionBrailleNewEnd);
 
-		const subtree = lex(regionSlice);
+		const subtree = lex(regionSlice, this._lexOptions);
 		await subtree.to_latex(this.table, this._translate);
 
 		const replacedFirstNode = nodes[firstIdx];
@@ -595,7 +619,7 @@ export class DualDocument {
 		const newBrailleText =
 			this.brailleText.slice(0, oldBrailleStart) + newBrailleForNode + this.brailleText.slice(oldBrailleEnd);
 
-		const subtree = lex(newBrailleForNode);
+		const subtree = lex(newBrailleForNode, this._lexOptions);
 		await subtree.to_latex(this.table, this._translate);
 		const replacement = subtree.children[0];
 		replacement.docId = node.docId;
@@ -739,7 +763,7 @@ export class DualDocument {
 		const newBrailleText =
 			this.brailleText.slice(0, oldBrailleStart) + newBrailleForNode + this.brailleText.slice(oldBrailleEnd);
 
-		const subtree = lex(newBrailleForNode);
+		const subtree = lex(newBrailleForNode, this._lexOptions);
 		await subtree.to_markdown(this.table, this._translate);
 		const replacement = subtree.children[0];
 		replacement.docId = node.docId;

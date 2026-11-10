@@ -32,6 +32,12 @@
 //                                        paragraphs on a blank line). Off by default:
 //                                        hard-wrapped BRFs use single newlines
 //                                        mid-paragraph.
+//   --title TEXT, --author TEXT, --lang TAG
+//                                       PDF metadata for --full-doc LaTeX output (title
+//                                        defaults to the file name, lang to en-US)
+//   --no-tagging                        with --full-doc LaTeX: use the legacy preamble
+//                                        instead of the tagged-PDF/UA-2 one (needed only
+//                                        for TeX distributions older than 2025)
 //   --braille-only                      skip text back-translation; always emit Unicode braille
 //   -o, --output FILE                   write output to FILE instead of stdout
 //                                        (required for binary formats like docx/odt/pptx/epub)
@@ -39,7 +45,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolveLouTranslate } from '@brailletools/liblouis-env';
-import { lex, convertText, convertToBinaryFormat } from '../src/index.js';
+import { lex, convertText, convertToBinaryFormat, wrapLatexDocument } from '../src/index.js';
+import path from 'node:path';
 
 // Pandoc writers that produce a binary document rather than text — these
 // can't sensibly be printed to stdout, so -o is required for them.
@@ -72,14 +79,18 @@ function option(names, def) {
 const wantFullDoc = flag('--full-doc');
 const brailleOnly = flag('--braille-only');
 const lineParagraphs = flag('--line-paragraphs');
+const noTagging = flag('--no-tagging');
 const table = option(['--table', '--dictionary'], 'en-ueb-g2.ctb');
 const format = option(['--format'], 'latex');
 const outputPath = option(['-o', '--output'], null);
+const docTitle = option(['--title'], null);
+const docAuthor = option(['--author'], '');
+const docLang = option(['--lang'], 'en-US');
 const filePath = args[0];
 
 if (!filePath) {
 	console.error(
-		'Usage: braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT] [--full-doc] [--line-paragraphs] [--braille-only] [-o FILE]'
+		'Usage: braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT] [--full-doc] [--title T] [--author A] [--lang L] [--no-tagging] [--line-paragraphs] [--braille-only] [-o FILE]'
 	);
 	process.exit(1);
 }
@@ -171,31 +182,24 @@ async function translate(unicodeBraille, tbl) {
 
 // ── Convert ──────────────────────────────────────────────────────────────
 
-let raw = readFileSync(filePath, 'utf8');
-if (lineParagraphs) {
-	// Every non-empty line becomes its own paragraph (lex() splits on blank lines).
-	raw = raw
-		.split(/\r\n|\n|\r/)
-		.filter(line => line.trim() !== '')
-		.join('\n\n');
-}
+const raw = readFileSync(filePath, 'utf8');
+const lexOptions = { linesAreParagraphs: lineParagraphs };
 
 if (format === 'latex' || format === 'markdown') {
-	const tree = lex(raw);
+	const tree = lex(raw, lexOptions);
 	const body = (format === 'markdown' ? await tree.to_markdown(table, translate) : await tree.to_latex(table, translate)).trim();
 
+	const fullDocTitle = docTitle ?? path.basename(filePath, path.extname(filePath));
 	const output = wantFullDoc
 		? format === 'markdown'
-			? ['---', 'title: Untitled', '---', '', body].join('\n')
-			: [
-					'\\documentclass{article}',
-					'\\usepackage{amsmath}',
-					'\\begin{document}',
-					'',
-					body,
-					'',
-					'\\end{document}'
-				].join('\n')
+			? // JSON.stringify gives a valid double-quoted YAML scalar (escapes quotes etc.)
+				['---', `title: ${JSON.stringify(fullDocTitle)}`, `lang: ${JSON.stringify(docLang)}`, '---', '', body].join('\n')
+			: wrapLatexDocument(body, {
+					title: fullDocTitle,
+					author: docAuthor,
+					lang: docLang,
+					accessible: !noTagging
+				})
 		: body;
 
 	if (outputPath) {
@@ -208,7 +212,7 @@ if (format === 'latex' || format === 'markdown') {
 	// the rest of the way. This is the same Markdown ⇄ Pandoc "hub" approach
 	// webeditor uses for Word — see src/pandoc.js's doc comment.
 	try {
-		const markdown = (await lex(raw).to_markdown(table, translate)).trim();
+		const markdown = (await lex(raw, lexOptions).to_markdown(table, translate)).trim();
 		const extraOptions = wantFullDoc ? { standalone: true } : {};
 
 		if (BINARY_FORMATS.has(format)) {
