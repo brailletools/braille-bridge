@@ -1,14 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { writeFileSync, unlinkSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 
-import { lex, parseWithTranslator, ascii2Braille, braille2Ascii, nemeth_to_latex, latex_to_nemeth } from '../src/index.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const cliPath = path.join(__dirname, '../bin/braille2latex.js');
+import { lex, ascii2Braille, braille2Ascii, nemeth_to_latex, latex_to_nemeth } from '../src/index.js';
 
 test('ascii2Braille/braille2Ascii round-trip plain text', () => {
 	const unicode = ascii2Braille('HELLO');
@@ -119,8 +112,9 @@ test('lex() keeps correct spacing around a single-character word inside a BOLD r
 	// Regression test for braille2latex#20's secondary symptom: the old special
 	// case for single-character words returned early inside BOLD/ITALIC runs,
 	// skipping the trailing-space append every other word gets — gluing the next
-	// word directly onto it (e.g. "big a dog" rendered as "big adog").
-	const tree = lex('_.big a dog_.');
+	// word directly onto it (e.g. "big a dog" rendered as "big adog"). Uses
+	// passage-scope bold ("^7"..."^'") since the span covers three words.
+	const tree = lex("^7big a dog^'");
 	const para = tree.children[0];
 	const bold = para.children.find((c) => c.token === 'BOLD');
 	assert.ok(bold, 'expected a BOLD child');
@@ -128,7 +122,7 @@ test('lex() keeps correct spacing around a single-character word inside a BOLD r
 });
 
 test('lex() marks childRangesReliable and stamps correct per-child brailleRange for markup-separated runs', () => {
-	const tree = lex('_.CAN_. DOG');
+	const tree = lex("^7CAN^' DOG");
 	const para = tree.children[0];
 	assert.equal(para.childRangesReliable, true);
 	assert.equal(para.children.length, 2);
@@ -137,8 +131,8 @@ test('lex() marks childRangesReliable and stamps correct per-child brailleRange 
 	assert.equal(bold.token, 'BOLD');
 	assert.equal(string.token, 'STRING');
 	assert.equal(para.brailleRange.start, 0);
-	const paraRaw = '_.CAN_. DOG';
-	assert.equal(paraRaw.slice(bold.brailleRange.start, bold.brailleRange.end), '_.CAN_.');
+	const paraRaw = "^7CAN^' DOG";
+	assert.equal(paraRaw.slice(bold.brailleRange.start, bold.brailleRange.end), "^7CAN^'");
 	assert.equal(paraRaw.slice(string.brailleRange.start, string.brailleRange.end), ' DOG');
 });
 
@@ -156,37 +150,28 @@ test('lex() marks childRangesReliable for a plain unmarked paragraph too', () =>
 });
 
 test('lex() falls back to childRangesReliable = false when the marker-only scan cannot match the real tree', () => {
-	// "_%3+4_:more" hits a separate, pre-existing lexer quirk: content immediately
-	// following a closing "_:" with no space lands in the (never-rendered) PARA
-	// node's own .value instead of becoming a sibling child — so the real tree has
-	// only one top-level child (the NEMETH node) while the marker-only scanner,
-	// which has no way to know about that quirk, predicts two spans (nemeth + the
-	// trailing text). The mismatch must be caught, not guessed through.
-	const tree = lex('_%3+4_:more');
+	// "abc^'def" has a stray bold passage-close marker with no matching passage-open.
+	// lex() correctly treats this as a no-op (the text stays one continuous STRING
+	// run -- see applyMarker()'s 'close' case), but the marker-only scanner in
+	// computeTopLevelBrailleSpans can't tell a stray close marker from a real one
+	// until it's too late, so it splits its guess into two spans where the real
+	// tree only has one STRING child. The mismatch must be caught, not guessed
+	// through.
+	const tree = lex("abc^'def");
 	const para = tree.children[0];
-	assert.equal(para.children.length, 1, 'sanity check: the dropped-text quirk really does produce only one child here');
+	assert.equal(para.children.length, 1, 'sanity check: the stray marker really does produce only one child here');
+	assert.equal(para.children[0].value, 'abcdef');
 	assert.equal(para.childRangesReliable, false);
 	assert.equal(para.children[0].brailleRange, null, 'brailleRange must be left unset, not a guessed value');
 });
 
-test('parseWithTranslator() converts plain text to LaTeX without needing liblouis installed', async () => {
-	// Identity translator stands in for a real back-translation backend (liblouis WASM or
-	// lou_translate) — this is the same shape of call the CLI makes, and is the smoke test
-	// that would have caught the previous bug where importing this module at all required
-	// the `liblouis` peer dependency to be installed, even for callers who never use it.
+test('lex()/to_latex() converts plain text to LaTeX without needing liblouis installed', async () => {
+	// Identity translator stands in for a real back-translation backend (liblouis
+	// WASM) — this is the smoke test that would have caught the previous bug
+	// where importing this module at all required the `liblouis` peer dependency
+	// to be installed, even for callers who never use it.
 	const identityTranslate = async (unicodeBraille) => unicodeBraille;
-	const latex = await parseWithTranslator('HELLO WORLD', 'en-ueb-g2.ctb', identityTranslate);
+	const latex = await lex('HELLO WORLD').to_latex('en-ueb-g2.ctb', identityTranslate);
 	assert.equal(typeof latex, 'string');
 	assert.notEqual(latex.trim(), '');
-});
-
-test('CLI converts a .brf file to output without crashing', () => {
-	const fixture = path.join(__dirname, 'fixture.brf');
-	writeFileSync(fixture, 'HELLO WORLD\n');
-	try {
-		const output = execFileSync('node', [cliPath, fixture, '--braille-only'], { encoding: 'utf8' });
-		assert.notEqual(output.trim(), '');
-	} finally {
-		unlinkSync(fixture);
-	}
 });

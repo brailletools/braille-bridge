@@ -135,7 +135,7 @@ test('applyLatexEdit on a PARA with markup preserves an untouched sibling child\
 		return text + 'X';
 	};
 
-	const doc = await DualDocument.fromBraille('_.CAN_. DOG', {
+	const doc = await DualDocument.fromBraille("^7CAN^' DOG", {
 		translate: identityTranslate,
 		translateForward: trackingTranslateForward
 	});
@@ -156,7 +156,7 @@ test('applyLatexEdit on a PARA with markup preserves an untouched sibling child\
 	assert.equal(result.nodeError, null);
 	// The BOLD("CAN") child's raw braille bytes must be byte-identical to before —
 	// proof it was preserved verbatim, not silently re-forward-translated.
-	assert.equal(result.brailleText.startsWith('_.CAN_.'), true);
+	assert.equal(result.brailleText.startsWith("^7CAN^'"), true);
 	// Forward translation must never even be *called* with the untouched BOLD
 	// child's content — a stronger check than just inspecting the final output.
 	assert.equal(forwardCalls.length, 1);
@@ -187,12 +187,14 @@ test('applyLatexEdit deletes a whole Nemeth segment atomically, leaving no orpha
 });
 
 test('applyLatexEdit falls back to whole-node regeneration when childRangesReliable is false, without corrupting anything', async () => {
-	// 'abc_.bold_.' hits a separate, pre-existing lexer quirk (a BOLD marker
-	// landing directly against a word with no space nests it under the STRING
-	// node instead of as a PARA sibling), which the marker-only scanner can't
-	// predict — see the equivalent lex()-level test in smoke.test.js. This proves
-	// the *edit* path degrades safely too, not just the scan/flag itself.
-	const doc = await makeDoc('abc_.bold_.');
+	// 'abc_:def' has a stray NEMETHSTOP with no matching NEMETHSTART. lex()
+	// correctly treats this as a no-op (the text stays one continuous STRING run
+	// -- see applyMarker()'s 'close' case), but the marker-only scanner in
+	// computeTopLevelBrailleSpans can't tell a stray close marker from a real one
+	// until it's too late, so it splits its guess into two 'text' spans where the
+	// real tree only has one STRING child — a genuine, expected mismatch. This
+	// proves the *edit* path degrades safely too, not just the scan/flag itself.
+	const doc = await makeDoc('abc_:def');
 	const para = doc.topLevelNodes[0];
 	assert.equal(para.token, 'PARA');
 	assert.equal(para.childRangesReliable, false, 'sanity check: this fixture must hit the fallback path');
@@ -230,7 +232,7 @@ test('applyLatexEdit on an empty paragraph (zero children) falls back to whole-n
 });
 
 test('applyLatexEdit falls back to whole-node regeneration when the edit lands in PARA-level glue outside every child\'s range (braille2latex#21)', async () => {
-	// Same '_.CAN_. DOG' fixture as the braille2latex#19 splice test above, but
+	// Same "^7CAN^' DOG" fixture as the braille2latex#19 splice test above, but
 	// the edit lands past the last child's own latexRange -- in the trailing
 	// "\n\n" the PARA case of to_latex() appends *after* stamping children's
 	// ranges (see processFile.js's PARA case). findOwningIndex has no
@@ -243,7 +245,7 @@ test('applyLatexEdit falls back to whole-node regeneration when the edit lands i
 		return text + 'X';
 	};
 
-	const doc = await DualDocument.fromBraille('_.CAN_. DOG', {
+	const doc = await DualDocument.fromBraille("^7CAN^' DOG", {
 		translate: identityTranslate,
 		translateForward: trackingTranslateForward
 	});
