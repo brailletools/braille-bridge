@@ -20,5 +20,11 @@ jobs:
 
       - run: pnpm install
 
+      # Several tests (lex-formatting, the CLI long-line test) assert on real
+      # back-translated English, which needs the system lou_translate binary;
+      # without it they either fail or skip silently.
+      - name: Install liblouis (lou_translate)
+        run: sudo apt-get update && sudo apt-get install -y liblouis-bin
+
       - name: Run tests
         run: pnpm test
