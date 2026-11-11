@@ -50,11 +50,29 @@ Resolves once `configure()` has finished setting up the liblouis backend (or rej
 setup failed). Exposed separately for callers that want to gate UI state (e.g. a loading
 indicator) on readiness without triggering a load.
 
-### `lex(text)`
+### `lex(text, { linesAreParagraphs? })`
 
-The BRF tokenizer — parses braille (ASCII/NABCC) text into the token tree `DualDocument`
-and `Element.to_latex()`/`to_markdown()` operate on. Exposed for callers who want the
-parsed token tree directly, without going through `DualDocument`.
+The BRF tokenizer — parses braille (ASCII/NABCC) text into the token
+tree `DualDocument` and `Element.to_latex()`/`to_markdown()` operate
+on. Exposed for callers who want the parsed token tree directly,
+without going through `DualDocument`.
+
+**Paragraphs.** By default a paragraph is ended by a
+blank line, so a single newline is just a wrapped line — correct for
+hard-wrapped BRFs. Pass `{ linesAreParagraphs: true }` for files where
+every line is its own paragraph (e.g. one answer per line): the
+separator is then a single newline, so no blank lines are needed to
+get paragraph breaks in the LaTeX/Markdown. A blank line becomes an
+empty paragraph, which keeps the braille text round-tripping exactly.
+The chosen separator is stored on the tree
+(`tree.paragraphSeparator`).
+
+**ASCII-braille aliases.** `~` and DEL (`0x7f`) are the same cells as
+`^` and `_` (like `a–z` alias `A–Z`), and some BRF writers emit them.
+`lex()` treats them as `^`/`_` so Nemeth spans and typeform markers
+are recognized either way (a 1-for-1 substitution, so offsets are
+unchanged; the lexed tree holds the canonical `^`/`_`). Assumes
+standard ASCII braille — not verified against NABCC.
 
 Recognizes two families of inline markers:
 
@@ -79,14 +97,44 @@ Recognizes two families of inline markers:
   = dots-2356, terminator = dot-3) — not liblouis's own back-translation, which doesn't
   interpret these as formatting on its own; `lex()` recognizes and strips them itself.
 
-### `fromMarkdown(text, { table?, translateForward? })`
+### `fromMarkdown(text, { table?, translateForward?, linesAreParagraphs? })`
 
 The reverse direction: parses Markdown source into the same token tree shape `lex()`
 builds from braille, forward-translating recognized prose/bold/italic/math into
 braille-ASCII as it goes. Unrecognized Markdown constructs (headings, lists, tables,
 etc.) are never dropped — their raw source is translated like ordinary prose and the
 enclosing paragraph is flagged (see `DualDocument.errors` below). Used internally by
-`DualDocument.fromMarkdown()`.
+`DualDocument.fromMarkdown()`. With `linesAreParagraphs`, the derived braille paragraphs are
+joined with a single newline (see `lex()`), and soft line wraps inside a Markdown paragraph
+become spaces so they can't be mistaken for paragraph breaks.
+
+### `wrapLatexDocument(body, { title?, author?, lang?, accessible? })`
+
+Wraps converted LaTeX in a complete, compilable document — the one template shared by the
+CLI's `--full-doc` and the web editor's LaTeX download. By default (`accessible: true`) it
+requests a **tagged, PDF/UA-2 PDF**:
+
+```latex
+\DocumentMetadata{lang=en-US, pdfversion=2.0, pdfstandard=ua-2,
+                  tagging=on, tagging-setup={math/setup=mathml-SE}}
+\documentclass[fleqn]{article}   % + amsmath, amssymb, hyperref
+\hypersetup{pdftitle={…}}
+```
+
+`tagging=on` builds the structure tree (screen readers need it, plus the document language and
+title, with math exposed as MathML); `pdfstandard=ua-2` alone only *claims* conformance.
+`title` defaults to "Untitled document" (PDF/UA requires one; no visible title page is added),
+`lang` to `en-US`; both are escaped/validated before being written into the preamble.
+
+- **Needs TeX Live / MiKTeX 2025 or later.** On older distributions `\DocumentMetadata`
+  fails — pass `{ accessible: false }` (CLI: `--no-tagging`) for the legacy preamble.
+- Checked on TeX Live 2026 with both `pdflatex` and `lualatex`, including Nemeth-derived math.
+  Known limitation: under `lualatex` with tagging, a hand-written `\begin{equation}` combined
+  with the `fleqn` option fails with a LuaTeX error; `pdflatex` is fine, and everything
+  braille-bridge itself emits (`$…$`, `$$…$$`, `\textbf`, `\textit`) works on both.
+- This produces the tags; it doesn't *validate* the PDF. Check the result with
+  [veraPDF](https://verapdf.org/) or PAC before claiming conformance. The output is flat
+  paragraphs and math — braille-bridge doesn't emit headings or lists.
 
 ### `ascii2Braille(str)` / `braille2Ascii(str)`
 
@@ -161,6 +209,10 @@ const { brailleText: b2, brailleCursor: c2 } = await doc.applyMarkdownEdit(newMa
 doc.errors; // [{ nodeId, pane, label, range, brailleRange, message }, ...]
 ```
 
+`fromBraille()`/`fromMarkdown()` also take `{ linesAreParagraphs: true }` (see `lex()`); the
+choice sticks to the document for every later edit, and is readable as `doc.linesAreParagraphs`.
+To change it, build a new document from `doc.brailleText`.
+
 `applyBrailleEdit`/`applyLatexEdit`/`applyMarkdownEdit` all only re-derive the top-level
 node(s) (paragraph or equation) actually touched by the edit, splice the result into the
 existing text, and return a best-effort proportional cursor position for the other pane
@@ -214,7 +266,8 @@ const latex = doc.latexText;
 ## Command-line usage
 
 ```bash
-braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT] [--full-doc] [--braille-only] [-o FILE]
+braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT] [--full-doc]
+               [--title T] [--author A] [--lang L] [--no-tagging] [--line-paragraphs] [--braille-only] [-o FILE]
 ```
 
 - `--table TABLE` / `--dictionary TABLE` — liblouis table to translate with (default: `en-ueb-g2.ctb`).
@@ -225,9 +278,17 @@ braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT]
   Markdown → `FORMAT`. Binary writers (`docx`, `odt`, `pptx`, `epub`, `epub2`, `epub3`)
   require `-o`, since their output can't sensibly go to stdout.
 - `--full-doc` — wrap the output in a complete document instead of just the translated body.
-  For `latex`/`markdown` this is a hand-rolled wrapper (`\documentclass`...`\end{document}`,
-  or a Markdown frontmatter block); for any Pandoc-routed format it maps to Pandoc's own
-  `standalone` option.
+  For `latex` this is [`wrapLatexDocument()`](#wraplatexdocumentbody--title-author-lang-accessible-)'s
+  tagged-PDF/UA-2 template (needs TeX Live 2025+ to compile); for `markdown` a YAML frontmatter
+  block with `title` and `lang`; for any Pandoc-routed format it maps to Pandoc's own `standalone`
+  option.
+- `--title TEXT`, `--author TEXT`, `--lang TAG` — document metadata for `--full-doc` (title defaults
+  to the input file's name, language to `en-US`).
+- `--no-tagging` — with `--full-doc` LaTeX, use the legacy preamble instead of the tagged-PDF one
+  (only needed for TeX distributions older than 2025).
+- `--line-paragraphs` — treat every line of the BRF as its own paragraph, so no blank lines are
+  needed between them (see [`lex()`](#lextext--linesareparagraphs-)). Off by default, since
+  hard-wrapped BRFs use single newlines mid-paragraph.
 - `--braille-only` — skip text back-translation entirely and always emit Unicode Braille for text sections
   (no external binary needed; Nemeth math is always converted regardless via the bundled Abraham parser).
 - `-o, --output FILE` — write to `FILE` instead of stdout.
@@ -247,10 +308,17 @@ Examples:
 
 ```bash
 braille-bridge "Sample Quiz.brf" --full-doc -o quiz.tex
+braille-bridge "Sample Quiz.brf" --full-doc --title "Quiz 1" --lang en-US -o quiz.tex   # then: lualatex quiz.tex
+braille-bridge answers.brf --line-paragraphs --format markdown
 braille-bridge "Sample Quiz.brf" --dictionary en-ueb-g2.ctb
 braille-bridge "Sample Quiz.brf" --format rst
 braille-bridge "Sample Quiz.brf" --format docx -o quiz.docx
 ```
+
+## Contributing and releases
+
+Changes go through pull requests that must pass CI; releases are version tags on `main`. See
+[RELEASING.md](RELEASING.md) for the steps.
 
 ## Credits
 
