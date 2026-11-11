@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { nemeth_to_latex, latex_to_nemeth, ascii2Braille } from './brailleMap.js';
+import { nemeth_to_latex, nemeth_display_lines, latex_to_nemeth, ascii2Braille } from './brailleMap.js';
 
 let asyncLiblouis = null;
 let liblouisReadyPromise = null;
@@ -497,11 +497,9 @@ class Element {
 					if (this.latex.length > 0 && !this.latex.endsWith('\n\n')) {
 						this.add_latex('\n');
 					}
-					nemethLines.forEach((line) => {
-						const latex = nemeth_to_latex(line);
-						if (latex && latex.trim() !== '') {
-							this.add_latex('$$' + latex + '$$\n');
-						}
+					// matrices/determinants span several lines; everything else is one line each
+					nemeth_display_lines(this.value || '').forEach((latex) => {
+						this.add_latex('$$' + latex + '$$\n');
 					});
 				} else {
 					// Single line: inline math
@@ -592,11 +590,8 @@ class Element {
 					if (this.markdown.length > 0 && !this.markdown.endsWith('\n\n')) {
 						this.add_markdown('\n');
 					}
-					nemethLines.forEach((line) => {
-						const md = nemeth_to_latex(line);
-						if (md && md.trim() !== '') {
-							this.add_markdown('$$' + md + '$$\n');
-						}
+					nemeth_display_lines(this.value || '').forEach((md) => {
+						this.add_markdown('$$' + md + '$$\n');
 					});
 				} else {
 					this.add_markdown('$' + nemeth_to_latex(this.value || '') + '$');

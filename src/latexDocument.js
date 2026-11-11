@@ -32,6 +32,17 @@
 // \textbf/\textit) on both engines -- so if a user adds an equation environment
 // to the LaTeX pane and compiles with lualatex, switch engines or drop fleqn.
 
+//
+// Long equations (the `longEquations` option, on by default). Braille equations have unknown
+// length, and a plain `$$...$$` display never breaks: a long one runs off the page (verified
+// on TeX Live 2026 with pdflatex and lualatex). So each display is rewritten to a paragraph
+// holding `$\displaystyle ...$`: TeX breaks inline math after binary operators and relations
+// by itself, and this works with the tagged PDF/UA preamble. (breqn's dmath* has nicer
+// layout but cannot be used: with any `tagging=on` it fails with "File ended while scanning
+// use of \__math_grab_dollar_delim:w", on both engines.) Pass `longEquations: 'none'` to
+// keep `$$...$$`; the web editor's HTML preview does, because latex.js can't parse the
+// rewritten form.
+
 const DEFAULT_LANG = 'en-US';
 // BCP 47-ish: "en", "en-US", "zh-Hant-TW". The value is pasted into
 // \DocumentMetadata, so anything that doesn't look like a language tag is ignored
@@ -51,6 +62,16 @@ const LATEX_SPECIALS = {
 	'%': '\\%'
 };
 
+// `$$...$$` that is not an escaped `\$` pair; non-greedy so adjacent displays stay separate.
+const DISPLAY_MATH_RE = /(?<!\\)\$\$([\s\S]*?)(?<!\\)\$\$/g;
+
+/** Rewrite `$$...$$` displays as breakable inline math paragraphs. */
+function breakLongEquations(body) {
+	return body.replace(DISPLAY_MATH_RE, (whole, inner) =>
+		inner.trim() === '' ? whole : `\\par\\smallskip\\noindent$\\displaystyle ${inner}$\\par\\smallskip` // not trimmed: `\\ ` at the end is a control space, and trimming it would leave `\\$`
+	);
+}
+
 /**
  * Escapes text for safe use inside a LaTeX argument (e.g. the document title).
  * @param {string} text
@@ -67,14 +88,21 @@ export function escapeLatexText(text) {
  * @param {string} [options.title]  PDF document title (required by PDF/UA). Default "Untitled document".
  * @param {string} [options.author] PDF author metadata; omitted when empty.
  * @param {string} [options.lang]   Document language tag. Default "en-US".
+ * @param {'wrap'|'none'|boolean} [options.longEquations='wrap'] Wrap long `$$...$$` equations (break
+ *   across lines; see the note above the constants). `'none'` / `false` keeps `$$...$$`.
  * @param {boolean} [options.accessible=true] Emit the tagged-PDF/UA-2 preamble. Set false for
  *   the legacy preamble if the document must compile on a TeX distribution older than 2025.
  * @returns {string} A complete LaTeX document
  */
-export function wrapLatexDocument(content, { title, author, lang, accessible = true } = {}) {
+export function wrapLatexDocument(content, { title, author, lang, accessible = true, longEquations = 'wrap' } = {}) {
+	const breakEquations = longEquations !== 'none' && longEquations !== false;
 	const body = (content ?? '').trim();
 	// If the body is an error message, comment it out to avoid compilation failure
-	const safeBody = body.startsWith('Error') ? `% ${body}` : body;
+	const safeBody = body.startsWith('Error')
+		? `% ${body}`
+		: breakEquations
+			? breakLongEquations(body)
+			: body;
 
 	const language = lang && LANG_RE.test(lang) ? lang : DEFAULT_LANG;
 	const pdfTitle = escapeLatexText(title?.trim() || 'Untitled document');
