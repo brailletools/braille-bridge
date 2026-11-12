@@ -83,3 +83,15 @@ test('\\limits and \\nolimits select the stacked or script form of big operators
 	assert.equal(latexToNemeth('\\int_a^b f(x)dx').toUpperCase(), '!;A^B"F(X)DX');
 	assert.equal(latexToNemeth('\\sum\\nolimits_{n=1}^{9} a').toUpperCase(), '.,S;N .K #1^9"A');
 });
+
+// The stacked-limit form is defined for `lim` only (18.3); both directions must agree on which
+// functions take it, so `max`/`min` are ordinary function names with a script, not limit forms.
+test('both directions use the same limit functions', () => {
+	for (const fn of ['lim', 'liminf', 'limsup']) {
+		const braille = latexToNemeth(`\\${fn}_{x \\to 0} f(x)`).toUpperCase();
+		assert.match(braille, /^"/);
+		assert.equal(nemethToLatexDetailed(braille).latex.replace(/\s+/g, ''), `\\${fn}_{x\\to0}f(x)`);
+	}
+	assert.deepEqual(nemethToLatexDetailed('"MAX%X $O #0] F(X)').warnings.length > 0, true, 'max has no stacked-limit form');
+	assert.doesNotMatch(latexToNemeth('\\max_{x} f(x)'), /%/);
+});

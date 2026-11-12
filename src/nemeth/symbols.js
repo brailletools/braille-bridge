@@ -300,3 +300,9 @@ export const MODIFIERS = {
 		"$'": (x) => `\\underset{\\smile}{${x}}`
 	}
 };
+
+/**
+ * Functions written with their limit directly under them: `"lim%x $o #0]` (Rule 18.3, 15 ex 21).
+ * The one list both directions use, so Nemeth->LaTeX and LaTeX->Nemeth cannot disagree.
+ */
+export const LIMIT_FUNCTIONS = new Set(['lim', 'liminf', 'limsup']);

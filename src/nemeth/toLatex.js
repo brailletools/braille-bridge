@@ -28,7 +28,8 @@ import {
 	GREEK_CAPITAL,
 	FUNCTIONS,
 	OPERATORNAME_FUNCTIONS,
-	MODIFIERS as RAW_MODIFIERS
+	MODIFIERS as RAW_MODIFIERS,
+	LIMIT_FUNCTIONS
 } from './symbols.js';
 
 const ALIASES = { '`': '@', '~': '^', '\x7f': '_', '{': '[', '|': '\\', '}': ']' };
@@ -130,8 +131,6 @@ class Out {
 		return this.parts.join('');
 	}
 }
-
-const LIMIT_NAMES = new Set(['lim', 'liminf', 'limsup', 'max', 'min', 'sup', 'inf']);
 
 // Big operators that take stacked limits, longest key first.
 const BIG_SIGNS = [
@@ -469,7 +468,7 @@ class Parser {
 		if (!sign) {
 			// limit functions: `"lim%x $o #0]` (15, ex 21; 11.8)
 			const m = /^[a-z]+/.exec(s.slice(j));
-			const name = m && LIMIT_NAMES.has(m[0]) ? m[0] : null;
+			const name = m && LIMIT_FUNCTIONS.has(m[0]) ? m[0] : null;
 			if (name) sign = [name, `\\${name}`];
 		}
 		if (!sign || s[j + sign[0].length] !== '%') return false;

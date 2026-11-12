@@ -28,7 +28,7 @@
 // Anything not covered throws UnsupportedLatexError (see latexParse.js).
 
 import { parseLatex, UnsupportedLatexError } from './latexParse.js';
-import { SYMBOLS, GREEK, GREEK_ALT } from './symbols.js';
+import { SYMBOLS, GREEK, GREEK_ALT, LIMIT_FUNCTIONS } from './symbols.js';
 import { normalize } from './toLatex.js';
 
 // ---------- tables (inverted from symbols.js) ----------
@@ -109,7 +109,6 @@ const GREEK_ALT_CELL = Object.fromEntries(Object.entries(GREEK_ALT).map(([cell, 
 const TYPEFORM = { bold: '_', italic: '.', script: '@', sans: ',.', barred: ',_' };
 const ACCENT = { bar: ':', hat: '_<', tilde: '@:', vec: '33@o', ray: '$o', line: '$[33o', arc: '$a', dot: '*', ddot: '**', ring: '.*' };
 const NUMERIC_BASE_OK = new Set(['id', 'greek', 'fn']);
-const LIMIT_FUNCTIONS = new Set(['lim', 'liminf', 'limsup']);
 
 const levelStr = (path) => (path === '' ? '"' : path);
 
