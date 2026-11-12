@@ -60,7 +60,10 @@ const EXTRA = {
 	'\\le': { braille: '"k:', rel: true },
 	'\\ge': { braille: '.1:', rel: true },
 	'\\ne': { braille: '/.k', rel: true },
-	'\\rightarrow': { braille: '$o', rel: true },
+	'\\rightarrow': { braille: '$33o', rel: true },
+	'\\neg': { braille: '@:' },
+	'\\lnot': { braille: '@:' },
+	'\\square': { braille: '$4' },
 	'\\gets': { braille: '$[33', rel: true },
 	'\\iff': { braille: '$[77o', rel: true },
 	'\\implies': { braille: '$777o', rel: true },
@@ -104,7 +107,7 @@ const GREEK_CELL = Object.fromEntries(Object.entries(GREEK).map(([cell, name]) =
 const GREEK_ALT_CELL = Object.fromEntries(Object.entries(GREEK_ALT).map(([cell, cmd]) => [cmd.slice(4), cell]));
 
 const TYPEFORM = { bold: '_', italic: '.', script: '@', sans: ',.', barred: ',_' };
-const ACCENT = { bar: ':', hat: '_<', tilde: '@:', vec: '$33o', dot: '*', ddot: '**', ring: '.*' };
+const ACCENT = { bar: ':', hat: '_<', tilde: '@:', vec: '33@o', ray: '$o', line: '$[33o', arc: '$a', dot: '*', ddot: '**', ring: '.*' };
 const NUMERIC_BASE_OK = new Set(['id', 'greek', 'fn']);
 const LIMIT_FUNCTIONS = new Set(['lim', 'liminf', 'limsup']);
 
@@ -141,6 +144,7 @@ class Gen {
 		this.pending = null; // level to return to before the next symbol, or null
 		this.needSpace = false;
 		this.radDepth = 0;
+		this.depth = 0; // nesting of enclosures (parentheses etc.)
 		this.inArray = inArray;
 	}
 
@@ -293,7 +297,9 @@ class Gen {
 			this.raw(TYPEFORM[n.style] + '#' + n.v);
 			return;
 		}
-		if (this.atWordStart()) this.raw('#');
+		// 3.4: no numeric indicator after the comma-space of a list inside an enclosure: `(1, 2)`
+		const inList = this.depth > 0 && /, -?$/.test(this.out);
+		if (this.atWordStart() && !inList) this.raw('#');
 		this.raw(n.v);
 	}
 
@@ -341,7 +347,7 @@ class Gen {
 			return;
 		}
 		let entry;
-		if (latex.startsWith('\\not') && latex.length > 4) {
+		if (!INVERSE[latex] && latex.startsWith('\\not') && latex.length > 4) {
 			const base = INVERSE[latex.slice(4)];
 			if (!base || !base.rel) throw new UnsupportedLatexError(latex);
 			entry = { braille: '/' + base.braille, rel: true };
@@ -354,6 +360,12 @@ class Gen {
 			this.resolve('content');
 			this.raw(entry.braille);
 			this.needSpace = true; // 21.13
+			return;
+		}
+		if (latex === '\\angle') {
+			this.resolve('content');
+			this.raw(entry.braille);
+			this.needSpace = true; // 4.5: the angle sign is followed by a space
 			return;
 		}
 		if (entry.ellipsis) {
@@ -426,7 +438,7 @@ class Gen {
 		const dots = '.'.repeat(this.radDepth);
 		this.resolve('content');
 		if (n.idx) {
-			this.raw('<');
+			this.raw(dots + '<'); // order dots come before the index (11.6)
 			this.seq(n.idx);
 			this.resolve('close');
 			this.raw('>');
@@ -453,7 +465,9 @@ class Gen {
 		if (open === undefined || close === undefined) throw new UnsupportedLatexError(`delimiter ${n.open} ${n.close}`);
 		this.resolve('content');
 		this.raw(open);
+		this.depth++;
 		this.seq(n.body);
+		this.depth--;
 		this.resolve('close');
 		this.raw(close);
 	}
@@ -461,7 +475,7 @@ class Gen {
 	/** 15.2: modified expressions. */
 	accent(n) {
 		const body = flatten(n.body);
-		const single = body.length === 1 && (body[0].t === 'id' || (body[0].t === 'num' && /^\d$/.test(body[0].v)));
+		const single = body.length === 1 && (body[0].t === 'id' || (body[0].t === 'num' && /^\.?\d$/.test(body[0].v)));
 		const under = n.kind === 'ubar';
 		if (under && body.length === 1 && body[0].t === 'sym' && INVERSE[body[0].latex]?.rel) {
 			this.needSpaceBefore();
@@ -487,10 +501,14 @@ class Gen {
 		this.raw((under ? '%' : '<') + mod + ']');
 	}
 
-	/** \sum / \prod take limits as modifiers (15, ex 21-27); \int takes scripts. */
+	/**
+	 * Limits written directly under/over the sign take the modifier form (15, ex 21-27; 11.9,
+	 * ex 5-6): \sum and \prod by default, \int and friends only after \limits. Otherwise the
+	 * limits are ordinary scripts (11.9, ex 7-9).
+	 */
 	big(n, sub, sup) {
 		const sign = { sum: '.,s', prod: '.,p', int: '!', iint: '!!', iiint: '!!!', oint: '!@$c]' }[n.name];
-		if ((n.name === 'sum' || n.name === 'prod') && (sub || sup)) {
+		if ((sub || sup) && stackedLimits(n)) {
 			this.resolve('content');
 			if (this.level !== '' && !this.out.endsWith(this.level)) this.raw(this.level);
 			this.raw('"' + sign);
@@ -519,7 +537,7 @@ class Gen {
 		const only = base && base.length === 1 ? base[0] : null;
 
 		// big operators and limit functions with limits take the modifier form
-		if (only && only.t === 'big' && (only.name === 'sum' || only.name === 'prod')) return this.big(only, sub, sup);
+		if (only && only.t === 'big' && stackedLimits(only)) return this.big(only, sub, sup);
 		if (only && only.t === 'fn' && LIMIT_FUNCTIONS.has(only.name) && sub && !sup) {
 			this.resolve('content');
 			if (L !== '' && !this.out.endsWith(L)) this.raw(L);
@@ -602,6 +620,12 @@ function matrixLines(n) {
  * @returns {string}
  * @throws {UnsupportedLatexError}
  */
+/** Big operator whose limits sit directly under/over it (see Gen.big). */
+function stackedLimits(n) {
+	if (n.t !== 'big') return false;
+	return n.limits === true || ((n.name === 'sum' || n.name === 'prod') && n.limits !== false);
+}
+
 export function latexToNemeth(latex) {
 	const nodes = flatten(parseLatex(latex)).filter((n, i, a) => !(n.t === 'space' && (i === 0 || i === a.length - 1)));
 	if (nodes.length === 1 && nodes[0].t === 'matrix') {

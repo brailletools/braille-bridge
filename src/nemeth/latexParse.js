@@ -77,7 +77,8 @@ const ACCENTS = {
 	tilde: 'tilde',
 	widetilde: 'tilde',
 	vec: 'vec',
-	overrightarrow: 'vec',
+	overrightarrow: 'ray',
+	overleftrightarrow: 'line',
 	dot: 'dot',
 	ddot: 'ddot',
 	mathring: 'ring'
@@ -218,6 +219,16 @@ class P {
 		} else {
 			base = this.atom();
 			if (base === null) return null;
+			// `\int\limits_a^b` / `\sum\nolimits_a^b`: remember the placement of the limits
+			if (base.t === 'big') {
+				let o = 0;
+				while (this.peek(o) && this.peek(o).k === 'ws') o++;
+				const lt = this.peek(o);
+				if (lt && lt.k === 'cmd' && (lt.v === 'limits' || lt.v === 'nolimits')) {
+					base = { ...base, limits: lt.v === 'limits' };
+					this.p += o + 1;
+				}
+			}
 		}
 		let primes = 0;
 		while (this.isCh("'")) {
@@ -265,6 +276,7 @@ class P {
 		if (t.k === 'ch') {
 			const c = t.v;
 			if (/[0-9]/.test(c)) return this.number(c);
+			if (c === '.' && this.peek()?.k === 'ch' && /[0-9]/.test(this.peek().v)) return this.number('.'); // `.65`
 			if (/[A-Za-z]/.test(c)) return { t: 'id', v: c, style: null };
 			if (c === '{') {
 				const body = this.seq();
@@ -325,6 +337,7 @@ class P {
 		if (name === 'overset' || name === 'stackrel') {
 			const top = this.arg();
 			const bottom = this.arg();
+			if (top.length === 1 && top[0].t === 'sym' && top[0].latex === '\\frown') return { t: 'acc', kind: 'arc', body: bottom };
 			return { t: 'stack', top, bottom };
 		}
 		if (name === 'underset') {

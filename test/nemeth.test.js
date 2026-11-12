@@ -6,6 +6,11 @@ import { nemethToLatexDetailed } from '../src/nemeth/toLatex.js';
 // cases are taken from worked examples in the BANA 2022 Nemeth Code (rule/example numbers
 // in the comments); expected LaTeX is the print form those examples describe.
 const cases = [
+	// 11.9 ex 5-6: integral with limits directly under and over; ex 7: limits as scripts
+	['"!%1<,=]3X^2"DX', '\\int\\limits_{1}^{\\infty}3x^{2}dx'],
+	['#5"!%A<B]F(X)DX', '5\\int\\limits_{a}^{b}f(x)dx'],
+	['!;0^2"F(X)DX', '\\int_{0}^{2}f(x)dx'],
+	['".,S%N .K #1<,=]A;N', '\\sum_{n = 1}^{\\infty}a_{n}'],
 	// Rule 3: numerals, numeric indicator, decimals, numeric comma
 	['#3+4', '3+4'],
 	['#6.696', '6.696'],

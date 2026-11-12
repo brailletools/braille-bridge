@@ -131,6 +131,18 @@ class Out {
 	}
 }
 
+const LIMIT_NAMES = new Set(['lim', 'liminf', 'limsup', 'max', 'min', 'sup', 'inf']);
+
+// Big operators that take stacked limits, longest key first.
+const BIG_SIGNS = [
+	['!@$c]', '\\oint'],
+	['!!!', '\\iiint'],
+	['!!', '\\iint'],
+	['!', '\\int'],
+	['.,s', '\\sum'],
+	['.,p', '\\prod']
+];
+
 class Parser {
 	constructor(src) {
 		this.s = normalize(src);
@@ -199,6 +211,7 @@ class Parser {
 					if (s[this.i] === '^' || s[this.i] === ';') out.hasBase = false;
 					continue;
 				}
+				if (this.tryBigLimits(out, base)) continue;
 				if (this.tryCompoundRel(out) || this.trySymbol(out)) continue; // `"k` (<), `"1` (ratio) ...
 				if (s[this.i + 1] === '<' || s[this.i + 1] === '%') {
 					this.i++; // `"` restating baseline before a modifier indicator: no-op
@@ -217,7 +230,7 @@ class Parser {
 			}
 
 			// ---- numerals (3.1, 3.2) and numeric subscripts (14.6) ----
-			if (isDigit(c) || (c === '.' && isDigit(s[this.i + 1] || '') && !this.canScript)) {
+			if (isDigit(c) || (c === '.' && isDigit(s[this.i + 1] || '') && !this.canScript && !this.spacedRelAt(this.i))) {
 				const num = this.number();
 				const numericSub = this.last === 'letter' || this.last === 'func' || this.last === 'prime';
 				if (!(this.last === 'letter' || this.last === 'func' || this.last === 'prime') && this.contractedBarAfterNumber(out, num)) {
@@ -250,6 +263,7 @@ class Parser {
 					out.unit(GROUPS[k]);
 					this.i += k.length;
 					this.last = isOpen ? 'open' : 'close';
+					if (isOpen) out.hasBase = false; // a script right after an opener is a LEFT script
 					matched = true;
 					break;
 				}
@@ -414,9 +428,11 @@ class Parser {
 			j++;
 		}
 		let index = null;
-		if (dots === 0 && s[j] === '<' && !this.canScript) {
+		if (s[j] === '<') {
 			// index of radical: < index >
 			const saveI = this.i;
+			const warnLen = this.warnings.length;
+			const lastSave = this.last;
 			this.i = j + 1;
 			const idx = this.seq(['>'], base);
 			if (this.at('>')) {
@@ -424,6 +440,8 @@ class Parser {
 				j = this.i;
 			} else {
 				this.i = saveI;
+				this.warnings.length = warnLen;
+				this.last = lastSave;
 				return false;
 			}
 		}
@@ -439,6 +457,52 @@ class Parser {
 	}
 
 	// ---------------- modifiers ----------------
+	/**
+	 * Big operator with its limits directly under and over it (15, ex 21-27; 11.9, ex 5-6):
+	 * [`"`] sign `%` lower [`<` upper] `]`. Material before the sign is not part of it.
+	 */
+	tryBigLimits(out, base) {
+		const s = this.s;
+		let j = this.i;
+		if (s[j] === '"') j++;
+		let sign = BIG_SIGNS.find(([k]) => s.startsWith(k, j));
+		if (!sign) {
+			// limit functions: `"lim%x $o #0]` (15, ex 21; 11.8)
+			const m = /^[a-z]+/.exec(s.slice(j));
+			const name = m && LIMIT_NAMES.has(m[0]) ? m[0] : null;
+			if (name) sign = [name, `\\${name}`];
+		}
+		if (!sign || s[j + sign[0].length] !== '%') return false;
+		const isFn = /^[a-z]/.test(sign[0]);
+		const save = this.i;
+		const warnLen = this.warnings.length;
+		const lastSave = this.last;
+		this.i = j + sign[0].length + 1;
+		const lower = this.seq(['<', ']'], base);
+		let upper = null;
+		if (this.at('<')) {
+			this.i++;
+			upper = this.seq([']'], base);
+		}
+		if (this.at(']') || this.i >= s.length) {
+			// (a terminator missing at the very end of the line is tolerated)
+			if (this.at(']')) this.i++;
+			if (isFn) {
+				out.unit(`${sign[1]}_{${lower}}`);
+				this.last = 'func';
+				return true;
+			}
+			const limits = sign[1] === '\\sum' || sign[1] === '\\prod' ? '' : '\\limits'; // sum/prod stack by default
+			out.unit(`${sign[1]}${limits}_{${lower}}${upper !== null ? `^{${upper}}` : ''}`);
+			this.last = 'unit';
+			return true;
+		}
+		this.i = save;
+		this.warnings.length = warnLen;
+		this.last = lastSave;
+		return false;
+	}
+
 	/** `"` expression `<` modifier `]`  /  `%` modifier `]` */
 	tryModified(out, base) {
 		const save = this.i;
@@ -518,6 +582,13 @@ class Parser {
 	}
 
 	// ---------------- compound comparison signs (21.8-21.12) ----------------
+	/** A comparison sign (e.g. `.1` for >) standing alone between spaces at `j`. */
+	spacedRelAt(j) {
+		const s = this.s;
+		if (!(j === 0 || isSpace(s[j - 1]))) return false;
+		const k = this.relKeyAt(j);
+		return k !== null && (j + k.length >= s.length || isSpace(s[j + k.length]) || s[j + k.length] === ':');
+	}
 	/** Longest comparison sign starting at `j`, or null. */
 	relKeyAt(j) {
 		for (const k of SYMBOL_KEYS) if (SYMBOLS[k].rel && this.s.startsWith(k, j)) return k;
@@ -605,7 +676,17 @@ class Parser {
 				// comparison signs must be space-delimited (or at the line boundary)
 				const before = this.i === 0 || isSpace(s[this.i - 1]);
 				const after = this.i + k.length >= s.length || isSpace(s[this.i + k.length]);
-				if (!(before && after)) continue;
+				if (!(before && after)) {
+					// the tilde of logic (negation) is not space-delimited: `@:p@%@:q` (10.2)
+					if (k === '@:' && !(this.i + 2 >= s.length || isSpace(s[this.i + 2]))) {
+						this.i += 2;
+						out.unit('\\neg ');
+						this.last = 'op';
+						out.hasBase = false;
+						return true;
+					}
+					continue;
+				}
 			}
 			if (k === "'''" && this.canScript && !sym.rel) {
 				// three primes after an operand, not an ellipsis
