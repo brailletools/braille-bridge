@@ -1,6 +1,6 @@
 {
   "name": "@brailletools/braille-bridge",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Braille to LaTeX/Markdown converter (and, via Pandoc, any other format) supporting Nemeth math notation",
   "type": "module",
   "exports": {
