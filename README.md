@@ -136,6 +136,20 @@ title, with math exposed as MathML); `pdfstandard=ua-2` alone only *claims* conf
   [veraPDF](https://verapdf.org/) or PAC before claiming conformance. The output is flat
   paragraphs and math — braille-bridge doesn't emit headings or lists.
 
+**Long equations — `longEquations: 'wrap' | 'none'` (default `'wrap'`;
+CLI: `--no-break-equations`).** A plain `$$…$$` display never breaks,
+so an equation of unknown length can run off the page. By default each
+display is therefore rewritten to a paragraph holding
+`\noindent$\displaystyle …$`, which TeX breaks after binary operators
+and relations on its own. It works with the tagged PDF/UA preamble and
+without it, and latex.js (the web editor's HTML preview) parses it.
+Inline `$…$`, escaped `\$` and empty `$$ $$` are left alone. Pass
+`'none'` (or `false`) to keep `$$…$$`.
+
+`breqn`'s `dmath*` has nicer layout but is deliberately not used: with any `tagging=on` it stops with
+`File ended while scanning use of \__math_grab_dollar_delim:w` (both engines; independent of the
+MathML setup, `amsmath` and `hyperref`), and latex.js rejects it (`unknown environment: dmath`).
+
 ### `ascii2Braille(str)` / `braille2Ascii(str)`
 
 Convert between ASCII Braille notation and Unicode Braille characters.
@@ -144,14 +158,40 @@ Convert between ASCII Braille notation and Unicode Braille characters.
 
 Convert a line of Nemeth Braille (ASCII or Unicode) to a LaTeX math string.
 
+Translation is done by a parser written from the [BANA 2022 Nemeth Code](https://brailleauthority.org/sites/default/files/2024-02/Nemeth_2022.pdf)
+(`src/nemeth/`). Covered: numerals and numeric subscripts, English/Greek/German letters and
+typeforms, simple/complex/hypercomplex/mixed fractions, superscripts and subscripts (including
+simultaneous and left scripts), radicals, modified expressions (bars, vectors, hats, ...),
+binomials, grouping, function names, and the operator, comparison (with negation), arrow, shape,
+set and logic symbols in the code's symbol index. If a line contains something the native parser
+does not recognize yet, that line alone falls back to Abraham, so coverage never gets worse.
+
+### `nemeth_display_lines(str)`
+
+Split a multi-line Nemeth block into display-math chunks. Consecutive rows wrapped in enlarged
+brackets or bars become one `bmatrix`/`pmatrix`/`vmatrix`/`Vmatrix` (Nemeth rule 25.8); every other
+line is one chunk.
+
 ### `latex_to_nemeth(str, options?)`
 
 The reverse of `nemeth_to_latex()`: converts a LaTeX math expression (no surrounding
-`$`/`$$` delimiters) to Nemeth Braille (ASCII). Unlike `nemeth_to_latex()`, this does
-**not** tolerate incomplete/unbalanced LaTeX and does **not** fall back to passing
-input through unchanged — it throws on invalid input, so callers can distinguish "no
-translation available" from "here's a (possibly wrong) result." `options` is
-forwarded to the underlying Abraham parser (e.g. `operatorNames`).
+`$`/`$$` delimiters) to Nemeth Braille (ASCII, uppercase letters). Unlike `nemeth_to_latex()`,
+this does **not** tolerate incomplete/unbalanced LaTeX and does **not** fall back to passing
+input through unchanged — it throws on invalid input **or on LaTeX it does not support yet**,
+so callers can distinguish "no translation available" from "here's a (possibly wrong) result."
+
+It is written from the Nemeth Code's rules (not Abraham): level indicators and baseline returns,
+numeric-indicator placement, the English-letter indicator and its exemptions, fraction depth,
+mixed numbers, modifiers and limits (`"lim%x $o #0]`), radicals, binomials, typeforms, spacing around
+functions/operations/comparisons, and matrices (a result containing newlines is returned with a
+leading and trailing newline, so `'_%' + result + '_:'` has the layout the code prescribes).
+
+Not supported yet (throws): `\text{...}` words, `align`/`cases`/other environments, matrices inside
+a larger expression, `\cancel`, superposed/compound comparison signs, and spatial arithmetic.
+
+`options.engine: 'abraham'` selects the legacy Desmos translator. It is kept only for comparison:
+it silently emits plausible-looking garbage for LaTeX it does not know (e.g. `\begin{matrix}` becomes
+`BEGIN MATRIX...`).
 
 ### `translateForward(text, table?)`
 
@@ -290,10 +330,10 @@ braille-bridge <file.brf> [--table TABLE | --dictionary TABLE] [--format FORMAT]
   needed between them (see [`lex()`](#lextext--linesareparagraphs-)). Off by default, since
   hard-wrapped BRFs use single newlines mid-paragraph.
 - `--braille-only` — skip text back-translation entirely and always emit Unicode Braille for text sections
-  (no external binary needed; Nemeth math is always converted regardless via the bundled Abraham parser).
+  (no external binary needed; Nemeth math is always converted regardless, by the bundled pure-JS Nemeth parser).
 - `-o, --output FILE` — write to `FILE` instead of stdout.
 
-Nemeth math sections are fully converted via the bundled [Abraham](#credits) parser (pure JS, no
+Nemeth math sections are converted by the bundled Nemeth parser (pure JS, no
 setup required). Text sections are back-translated by shelling out to a `lou_translate` binary,
 resolved via [`@brailletools/liblouis-env`](https://github.com/brailletools/liblouis-env/tree/main/js/packages/node)
 (checks the `LOU_TRANSLATE_PATH` environment variable, then `PATH`); if none is found, text falls back
@@ -322,5 +362,6 @@ Changes go through pull requests that must pass CI; releases are version tags on
 
 ## Credits
 
-- [Abraham](https://www.desmos.com/api/v1.11/docs/abraham.html) (Desmos) — Nemeth to LaTeX
+- [The Nemeth Braille Code for Mathematics and Science Notation, 2022](https://brailleauthority.org/sites/default/files/2024-02/Nemeth_2022.pdf) (Braille Authority of North America) — the specification the native Nemeth ⇄ LaTeX translators are written from
+- [Abraham](https://www.desmos.com/api/v1.11/docs/abraham.html) (Desmos) — fallback for Nemeth → LaTeX lines the native parser does not cover yet
 - [liblouis](https://github.com/liblouis/liblouis.js) — Braille back-translation (LGPL v2.1+)

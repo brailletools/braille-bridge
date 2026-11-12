@@ -38,6 +38,10 @@
 //   --no-tagging                        with --full-doc LaTeX: use the legacy preamble
 //                                        instead of the tagged-PDF/UA-2 one (needed only
 //                                        for TeX distributions older than 2025)
+//   --no-break-equations                with --full-doc LaTeX: keep display equations as
+//                                        plain $$...$$ (by default they are rewritten so a long
+//                                        equation breaks at operators instead of running off
+//                                        the page)
 //   --braille-only                      skip text back-translation; always emit Unicode braille
 //   -o, --output FILE                   write output to FILE instead of stdout
 //                                        (required for binary formats like docx/odt/pptx/epub)
@@ -80,6 +84,7 @@ const wantFullDoc = flag('--full-doc');
 const brailleOnly = flag('--braille-only');
 const lineParagraphs = flag('--line-paragraphs');
 const noTagging = flag('--no-tagging');
+const noBreakEquations = flag('--no-break-equations');
 const table = option(['--table', '--dictionary'], 'en-ueb-g2.ctb');
 const format = option(['--format'], 'latex');
 const outputPath = option(['-o', '--output'], null);
@@ -198,7 +203,8 @@ if (format === 'latex' || format === 'markdown') {
 					title: fullDocTitle,
 					author: docAuthor,
 					lang: docLang,
-					accessible: !noTagging
+					accessible: !noTagging,
+					longEquations: noBreakEquations ? 'none' : 'wrap'
 				})
 		: body;
 

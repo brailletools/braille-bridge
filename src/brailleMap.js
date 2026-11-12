@@ -1,6 +1,9 @@
 // @ts-nocheck
 // Abraham is a UMD build that registers a global. Import for side effects and read from globalThis.
 import './abraham.min.js';
+import { nemethToLatexDetailed } from './nemeth/toLatex.js';
+import { nemethDisplayChunks } from './nemeth/blocks.js';
+import { latexToNemeth } from './nemeth/toNemeth.js';
 
 const Abraham = globalThis.Abraham;
 if (!Abraham) {
@@ -74,12 +77,23 @@ export function braille2Ascii(input_str) {
  * relying on a silent fallback: treating unparsed LaTeX text as if it were ASCII
  * Nemeth braille would corrupt the braille pane, not just fail to update it.
  * @param {string} text - LaTeX math, no surrounding $ delimiters
- * @param {object} [options] - forwarded to Abraham.latexToNemeth (e.g. operatorNames)
+ * @param {object} [options] - `{ engine: 'abraham' }` selects the legacy Desmos translator (kept
+ *   for comparison only: it silently emits garbage for LaTeX it does not know); other options
+ *   are forwarded to it (e.g. operatorNames)
  * @returns {string} ASCII Nemeth braille
- * @throws {Error} if text is not valid LaTeX or Abraham is unavailable
+ * @throws {Error} if text is not valid LaTeX or uses a construct that is not supported yet
  */
 export function latex_to_nemeth(text, options) {
 	if (!text || text.trim() === '') return '';
+	if (options?.engine !== 'abraham') {
+		try {
+			// Uppercase letters are the BRF convention (and what latex_to_nemeth has always
+			// returned); a-z and A-Z are the same cells, and nemeth_to_latex accepts both.
+			return latexToNemeth(text).toUpperCase();
+		} catch (error) {
+			throw new Error(`[latex_to_nemeth] ${error.message}`);
+		}
+	}
 	if (!Abraham) {
 		throw new Error('[latex_to_nemeth] Abraham library is not loaded');
 	}
@@ -105,6 +119,17 @@ export function latex_to_nemeth(text, options) {
 	return braille2Ascii(result.value);
 }
 
+/**
+ * Splits a multi-line Nemeth block into display-math chunks, assembling matrices and
+ * determinants (Rule 25.8) from their rows. Other lines are translated one per chunk by
+ * nemeth_to_latex(), so the Abraham fallback still applies. Blank lines are dropped.
+ * @param {string} text
+ * @returns {string[]} LaTeX chunks, each meant for its own `$$...$$`
+ */
+export function nemeth_display_lines(text) {
+	return nemethDisplayChunks(text, nemeth_to_latex);
+}
+
 export function nemeth_to_latex(text) {
 	// convert the data to Braille
 	// Don't trim the entire text - we need to preserve spaces within content
@@ -122,6 +147,15 @@ export function nemeth_to_latex(text) {
 			continue;
 		}
 		
+		// Native translator (written from the BANA 2022 Nemeth Code) first. It reports
+		// anything it cannot translate through `warnings`; in that case, and only then,
+		// fall back to Abraham for this line so coverage never regresses.
+		const native = nemethToLatexDetailed(line);
+		if (native.warnings.length === 0 && native.latex.trim() !== '') {
+			results.push(native.latex);
+			continue;
+		}
+
 		let latex = '';
 		let braille = '';
 		
