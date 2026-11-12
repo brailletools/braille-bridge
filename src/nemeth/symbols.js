@@ -64,7 +64,7 @@ export const SYMBOLS = {
 	'$p': { latex: '\\perp', rel: true },
 	'/$l': { latex: '\\nparallel', rel: true },
 	'$o': { latex: '\\to', rel: true }, // contracted right arrow
-	'$33o': { latex: '\\to', rel: true },
+	'$33o': { latex: '\\rightarrow', rel: true }, // full-length arrow (10.2); `$o` is the contracted \\to of limits (11.8)
 	'${33': { latex: '\\leftarrow', rel: true },
 	'${33o': { latex: '\\leftrightarrow', rel: true },
 	'$<33o': { latex: '\\uparrow', rel: true },
@@ -282,6 +282,7 @@ export const MODIFIERS = {
 		'*': (x) => `\\dot{${x}}`,
 		'**': (x) => `\\ddot{${x}}`,
 		'***': (x) => `\\dddot{${x}}`,
+		'33@o': (x) => `\\vec{${x}}`, // vector (harpoon) -- 11.3
 		'$33o': (x) => `\\overrightarrow{${x}}`,
 		'$o': (x) => `\\overrightarrow{${x}}`,
 		'${33': (x) => `\\overleftarrow{${x}}`,
@@ -299,3 +300,9 @@ export const MODIFIERS = {
 		"$'": (x) => `\\underset{\\smile}{${x}}`
 	}
 };
+
+/**
+ * Functions written with their limit directly under them: `"lim%x $o #0]` (Rule 18.3, 15 ex 21).
+ * The one list both directions use, so Nemeth->LaTeX and LaTeX->Nemeth cannot disagree.
+ */
+export const LIMIT_FUNCTIONS = new Set(['lim', 'liminf', 'limsup']);

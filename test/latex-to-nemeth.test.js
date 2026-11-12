@@ -46,6 +46,15 @@ const cases = [
 	['\\lim_{x\\to 0} f(x)', '"lim%x $o #0] f(x)'], // ex 15-3 / 18-11
 	['\\sum_{n=0}^{\\infty} a_n', '".,s%n .k #0<,=]a;n'], // ex 21-27
 	['\\binom{n}{k}', '(n%k)'], // ex 15-43
+	// 11.9 integrals: limits as scripts (ex 7-9) or directly under/over with \limits (ex 5-6)
+	['\\int x^2dx', '!x^2"dx'], // ex 1
+	['\\int (x^2-2x+4)dx', '!(x^2"-2x+4)dx'], // ex 3
+	['\\iint f(x,y)dA', '!!f(x, y)d,a'], // ex 4
+	['\\int\\limits_1^\\infty 3x^2dx', '"!%1<,=]3x^2"dx'], // ex 5
+	['5\\int\\limits_a^b f(x)dx', '#5"!%a<b]f(x)dx'], // ex 6
+	['\\int_0^2 f(x)dx', '!;0^2"f(x)dx'], // ex 7
+	['\\int_0^\\infty \\sin x dx', '!;0^,="sin xdx'], // ex 8
+	['\\sum\\limits_{n=0}^{\\infty} a_n', '".,s%n .k #0<,=]a;n'],
 	// 16 radicals
 	['\\sqrt[3]{x}', '<3>x]'],
 	['\\sqrt{1+\\sqrt{x}}', '>1+.>x.]]'],
