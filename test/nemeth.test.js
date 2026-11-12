@@ -140,6 +140,11 @@ test('unknown cells are reported as warnings, never silently dropped', () => {
 	assert.ok(warnings.length > 0);
 	assert.match(latex, /x/);
 	assert.match(latex, /y/);
+	assert.match(latex, /\\text\{\[U\+0001\]\}/, 'raw cell must not be embedded in the LaTeX');
+});
+
+test('unknown TeX-special cells are not injected into the LaTeX', () => {
+	assert.doesNotMatch(nemethToLatexDetailed('x\x7fy').latex, /\x7f/);
 });
 
 test('uppercase, backtick and tilde aliases normalize like their canonical cells', () => {

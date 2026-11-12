@@ -315,7 +315,8 @@ class Parser {
 
 			// ---- unknown ----
 			this.warn(`unrecognized Nemeth cell ${JSON.stringify(c)}`);
-			out.unit(`\\text{${c}}`);
+			// Placeholder for the raw cell: it may be a control or TeX-special character.
+			out.unit(`\\text{[U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}]}`);
 			this.i++;
 			this.last = 'unit';
 		}

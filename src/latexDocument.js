@@ -40,8 +40,8 @@
 // by itself, and this works with the tagged PDF/UA preamble. (breqn's dmath* has nicer
 // layout but cannot be used: with any `tagging=on` it fails with "File ended while scanning
 // use of \__math_grab_dollar_delim:w", on both engines.) Pass `longEquations: 'none'` to
-// keep `$$...$$`; the web editor's HTML preview does, because latex.js can't parse the
-// rewritten form.
+// keep `$$...$$`. latex.js (the web editor's HTML preview) renders the rewritten form, but not
+// breqn's dmath*.
 
 const DEFAULT_LANG = 'en-US';
 // BCP 47-ish: "en", "en-US", "zh-Hant-TW". The value is pasted into
