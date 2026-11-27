@@ -654,11 +654,15 @@ function closedNemethSpans(text) {
 // split at `separator`, except that a closed Nemeth block is never cut apart -- its line
 // breaks (blank lines included) are part of the math.
 export function paragraphRanges(text, separator) {
-	const blocks = closedNemethSpans(text);
+	// In start order, so one forward-moving index serves every separator. A nested block
+	// starts after, and ends before, the one around it, so it never needs to be consulted.
+	const blocks = closedNemethSpans(text).sort((a, b) => a.start - b.start);
+	let next = 0; // first block that could still contain a separator
 	const ranges = [];
 	let start = 0;
 	for (let at = text.indexOf(separator); at !== -1; ) {
-		if (blocks.some((b) => at > b.start && at < b.end)) {
+		while (next < blocks.length && blocks[next].end <= at) next++;
+		if (next < blocks.length && at > blocks[next].start) {
 			at = text.indexOf(separator, at + 1);
 			continue;
 		}
