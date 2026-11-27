@@ -22,6 +22,7 @@ import {
 	LINE_PARAGRAPH_SEPARATOR
 } from './processFile.js';
 import { latex_to_nemeth } from './brailleMap.js';
+import { latexProseToText } from './latexDocument.js';
 
 const defaultTable = 'en-ueb-g2.ctb';
 
@@ -81,9 +82,7 @@ function extractMathBody(latexSlice) {
 // round-tripping would need a real LaTeX parser, which nothing in this
 // dependency graph provides.
 function stripProseMarkup(latexSlice) {
-	return stripTrailingBlankLines(latexSlice)
-		.replace(/\\(?:text(?:bf|it)|underline)\{/g, '')
-		.replace(/}/g, '');
+	return latexProseToText(stripTrailingBlankLines(latexSlice));
 }
 
 // A PARA node's latex/markdown can mix prose and inline/display math (e.g.
@@ -102,7 +101,10 @@ function stripProseMarkup(latexSlice) {
 function segmentMixedMathText(latexSlice) {
 	const s = stripTrailingBlankLines(latexSlice);
 	const segments = [];
-	const re = /\$\$([\s\S]*?)\$\$|\$([^$]*)\$/g;
+	// A `\$` is a dollar sign in the prose (see escapeLatexProse()), not a math
+	// delimiter. Inside inline math an escaped pair such as `\$` or `\\` is skipped
+	// as a unit, so it can't end the math early either.
+	const re = /(?<!\\)\$\$([\s\S]*?)(?<!\\)\$\$|(?<!\\)\$((?:\\[\s\S]|[^$\\])*)\$/g;
 	let lastIndex = 0;
 	let match;
 	while ((match = re.exec(s)) !== null) {

@@ -62,6 +62,47 @@ const LATEX_SPECIALS = {
 	'%': '\\%'
 };
 
+const SPECIAL_CHARS = /[\\{}$&#^_~%]/g;
+
+/**
+ * Escapes text for the body of a LaTeX document, so that prose containing any of
+ * LaTeX's special characters (and liblouis's `\5/`-style marks for cells it could
+ * not translate) comes out as the same text rather than as markup. Unlike
+ * escapeLatexText() this keeps line breaks.
+ * @param {string} text
+ */
+export function escapeLatexProse(text) {
+	return String(text ?? '').replace(SPECIAL_CHARS, (ch) => LATEX_SPECIALS[ch]);
+}
+
+// What escapeLatexProse() produces, plus the markup this package wraps prose in
+// (\textbf{ \textit{ \underline{ ... }) and the bare `}` that closes it. An
+// escaped brace (`\}`) must be matched before a bare one, or the brace inside
+// it would be taken for the close of a wrapper.
+const PROSE_TOKEN = new RegExp(
+	[
+		String.raw`\\(?:text(?:bf|it)|underline)\{`,
+		String.raw`\\text(?:backslash|asciicircum|asciitilde)\{\}`,
+		String.raw`\\[{}$&#_%]`,
+		String.raw`\}`
+	].join('|'),
+	'g'
+);
+const PROSE_TEXT = { '\\textbackslash{}': '\\', '\\textasciicircum{}': '^', '\\textasciitilde{}': '~' };
+
+/**
+ * The text a slice of LaTeX prose stands for: inverse of escapeLatexProse(), and
+ * drops the \textbf{}/\textit{}/\underline{} wrappers (their content is kept).
+ * @param {string} latex
+ */
+export function latexProseToText(latex) {
+	return latex.replace(PROSE_TOKEN, (token) => {
+		if (token in PROSE_TEXT) return PROSE_TEXT[token];
+		if (token.length === 2 && token[0] === '\\') return token[1]; // \& \{ \} \$ ...
+		return ''; // a wrapper opening, or the bare } that closes one
+	});
+}
+
 // `$$...$$` that is not an escaped `\$` pair; non-greedy so adjacent displays stay separate.
 const DISPLAY_MATH_RE = /(?<!\\)\$\$([\s\S]*?)(?<!\\)\$\$/g;
 
