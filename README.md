@@ -183,10 +183,13 @@ so callers can distinguish "no translation available" from "here's a (possibly w
 It is written from the Nemeth Code's rules (not Abraham): level indicators and baseline returns,
 numeric-indicator placement, the English-letter indicator and its exemptions, fraction depth,
 mixed numbers, modifiers and limits (`"lim%x $o #0]`), radicals, binomials, typeforms, spacing around
-functions/operations/comparisons, and matrices (a result containing newlines is returned with a
-leading and trailing newline, so `'_%' + result + '_:'` has the layout the code prescribes).
+functions/operations/comparisons, matrices, and the line environments (`equation`, `align`,
+`aligned`, `gather`, `gathered`, `multline`, `split`, `flalign`, `eqnarray`), which become one
+braille line per row with alignment marks and equation numbering dropped. A matrix or line
+environment is returned with a leading and trailing newline, so `'_%' + result + '_:'` has the
+layout the code prescribes.
 
-Not supported yet (throws): `\text{...}` words, `align`/`cases`/other environments, matrices inside
+Not supported yet (throws): `\text{...}` words, `cases`/other environments, matrices inside
 a larger expression, `\cancel`, superposed and five-step-modified comparison signs, words inside math (`,'of`, `_'s`), and spatial arithmetic.
 
 `options.engine: 'abraham'` selects the legacy Desmos translator. It is kept only for comparison:

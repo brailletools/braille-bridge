@@ -125,7 +125,7 @@ test('matrices become aligned rows in enlarged brackets, with the layout the cod
 
 // The old translator turned these into garbage ("BEGIN MATRIX...", "XIN", "MATHBB ,R").
 // Unsupported input must throw so callers leave the braille pane untouched.
-for (const bad of ['\\unknowncmd{x}', '\\text{hello}', '\\begin{align}a&=b\\end{align}', '\\frac{1}{2', 'x^']) {
+for (const bad of ['\\unknowncmd{x}', '\\text{hello}', '\\begin{cases}1\\\\2\\end{cases}', '\\frac{1}{2', 'x^']) {
 	test(`unsupported or malformed LaTeX throws instead of emitting garbage: ${bad}`, () => {
 		assert.throws(() => latex_to_nemeth(bad), /latex_to_nemeth/);
 	});

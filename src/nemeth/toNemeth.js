@@ -626,14 +626,40 @@ function stackedLimits(n) {
 }
 
 export function latexToNemeth(latex) {
-	const nodes = flatten(parseLatex(latex)).filter((n, i, a) => !(n.t === 'space' && (i === 0 || i === a.length - 1)));
-	if (nodes.length === 1 && nodes[0].t === 'matrix') {
-		return '\n' + matrixLines(nodes[0]).join('\n') + '\n';
+	// Equation numbering has no braille equivalent and doesn't change the math.
+	const math = latex.replace(/\\(?:label\{[^{}]*\}|nonumber\b|notag\b)/g, '');
+	const nodes = trimSpaces(flatten(parseLatex(math)));
+	if (nodes.length === 1 && (nodes[0].t === 'matrix' || nodes[0].t === 'lines')) {
+		return '\n' + blockLines(nodes[0]).join('\n') + '\n';
 	}
+	return singleLine(nodes);
+}
+
+function trimSpaces(nodes) {
+	let start = 0;
+	let end = nodes.length;
+	while (start < end && nodes[start].t === 'space') start++;
+	while (end > start && nodes[end - 1].t === 'space') end--;
+	return nodes.slice(start, end);
+}
+
+function singleLine(nodes) {
 	const g = new Gen();
 	g.seq(nodes, { top: true });
 	g.resolve('end');
 	return g.out.trimEnd();
+}
+
+/** The braille lines of a node that is laid out over several lines. */
+function blockLines(node) {
+	if (node.t === 'matrix') return matrixLines(node);
+	return node.rows.flatMap((cells) => {
+		const row = trimSpaces(cells.flatMap((cell) => flatten(cell)));
+		if (row.length === 0) return [];
+		// e.g. `split` inside `equation`, or a matrix alone on its row
+		if (row.length === 1 && (row[0].t === 'matrix' || row[0].t === 'lines')) return blockLines(row[0]);
+		return [singleLine(row)];
+	});
 }
 
 export { UnsupportedLatexError };

@@ -634,20 +634,51 @@ class Element {
 	}
 }
 
+// [start, end) of every Nemeth block that is actually closed (`_%` ... `_:`), including
+// nested ones. An opener with no matching close is deliberately not a block, so math that
+// is still being typed can't swallow the rest of the document.
+function closedNemethSpans(text) {
+	const spans = [];
+	const open = [];
+	for (let i = 0; i < text.length - 1; i++) {
+		const marker = MARKERS[text.substring(i, i + 2)];
+		if (marker?.span !== tokens.NEMETH) continue;
+		if (marker.kind === 'open') open.push(i);
+		else if (open.length > 0) spans.push({ start: open.pop(), end: i + 2 });
+		i++;
+	}
+	return spans;
+}
+
+// The [start, end) range of each top-level paragraph of normalized braille text: the text
+// split at `separator`, except that a closed Nemeth block is never cut apart -- its line
+// breaks (blank lines included) are part of the math.
+export function paragraphRanges(text, separator) {
+	const blocks = closedNemethSpans(text);
+	const ranges = [];
+	let start = 0;
+	for (let at = text.indexOf(separator); at !== -1; ) {
+		if (blocks.some((b) => at > b.start && at < b.end)) {
+			at = text.indexOf(separator, at + 1);
+			continue;
+		}
+		ranges.push({ start, end: at });
+		start = at + separator.length;
+		at = text.indexOf(separator, start);
+	}
+	ranges.push({ start, end: text.length });
+	return ranges;
+}
+
 // Top-level (ROOT-child) node ranges only — the granularity DualDocument's
-// paragraph/equation-level sync operates at. paragraphs[i] is an exact contiguous
-// substring of normalizedText (split('\n\n') loses nothing at this level, unlike
-// the word-rejoining lower in the tree), so these offsets are exact, not
+// paragraph/equation-level sync operates at. Each paragraph is an exact contiguous
+// substring of normalizedText (see paragraphRanges(); nothing is lost at this level,
+// unlike the word-rejoining lower in the tree), so these offsets are exact, not
 // approximate.
 function assignTopLevelBrailleRanges(root, normalizedText, separator) {
-	const paragraphs = normalizedText.split(separator);
-	let cursor = 0;
-	paragraphs.forEach((para, i) => {
+	paragraphRanges(normalizedText, separator).forEach((range, i) => {
 		const node = root.children[i];
-		if (node) {
-			node.brailleRange = { start: cursor, end: cursor + para.length };
-		}
-		cursor += para.length + separator.length;
+		if (node) node.brailleRange = range;
 	});
 }
 
@@ -803,7 +834,7 @@ export function lex(text, { linesAreParagraphs = false } = {}) {
 	const parseTree = new Element(tokens.ROOT);
 	parseTree.paragraphSeparator = separator;
 
-	const paragraphs = text.split(separator);
+	const paragraphs = paragraphRanges(text, separator).map(({ start, end }) => text.slice(start, end));
 	paragraphs.forEach(para => {
 		const paraNode = parseTree.push(tokens.PARA);
 		let currentToken = paraNode;
@@ -972,7 +1003,11 @@ export function lex(text, { linesAreParagraphs = false } = {}) {
 // in document.js already recognize for LaTeX -- Pandoc's default Markdown
 // math extension uses identical syntax, so braille-bridge speaks one math
 // delimiter dialect across both target formats.
-const MARKDOWN_MATH_RE = /\$\$([\s\S]*?)\$\$|\$([^$\n]*)\$/g;
+// Inline math may wrap onto a following line (never across a blank one), but then, as in
+// Pandoc, the `$`s must hug their content and the closing one can't precede a digit --
+// otherwise two dollar amounts on neighbouring lines would be read as math.
+const MARKDOWN_MATH_RE =
+	/\$\$([\s\S]*?)\$\$|\$([^$\n]*|(?!\s)(?:[^$\n]|\n(?!\n))*?(?<!\s)(?=\$(?!\d)))\$/g;
 
 // Bold/italic: **bold** / *italic*, the CommonMark/Pandoc-default emphasis
 // markers to_markdown() emits and this function expects back. Underscore
@@ -1072,7 +1107,8 @@ const MARKDOWN_SEGMENT_TOKEN = {
 // single flagged literal child for unrecognized block-level markdown) from one
 // blank-line-separated chunk of Markdown source.
 async function buildParaFromMarkdown(paraNode, paraSource, table, forward) {
-	if (MARKDOWN_UNSUPPORTED_BLOCK_RE.test(paraSource)) {
+	// A line of math may well start with "+ " or "- ", which isn't a list item.
+	if (MARKDOWN_UNSUPPORTED_BLOCK_RE.test(paraSource.replace(MARKDOWN_MATH_RE, 'math'))) {
 		const child = paraNode.push(tokens.STRING);
 		child.set_value(await forward(paraSource, table));
 		flagUnsupported(
@@ -1146,6 +1182,17 @@ function brailleTextOf(node) {
 	}
 }
 
+// brailleTextOf() for lines-are-paragraphs mode: soft wraps become spaces so they can't
+// be read as paragraph breaks. Line breaks inside a math block stay -- they lay the math
+// out, and paragraphRanges() never splits there.
+function unwrappedBrailleTextOf(node) {
+	if (node.token === tokens.PARA || node.token === tokens.EQUATION) {
+		return node.children.map(unwrappedBrailleTextOf).join('');
+	}
+	const text = brailleTextOf(node);
+	return node.token === tokens.NEMETH ? text : text.replace(/\n+/g, ' ');
+}
+
 /**
  * Parses Markdown source into the same Element tree shape lex() builds from
  * braille, forward-translating recognized prose/bold/italic/math into
@@ -1189,7 +1236,7 @@ export async function fromMarkdown(text, { table = defaultTable, translateForwar
 	// lex()/assignTopLevelBrailleRanges() do, from each top-level node's own
 	// (already-translated) content.
 	const brailleParas = parseTree.children.map((node) =>
-		linesAreParagraphs ? brailleTextOf(node).replace(/\n+/g, ' ') : brailleTextOf(node)
+		linesAreParagraphs ? unwrappedBrailleTextOf(node) : brailleTextOf(node)
 	);
 	parseTree.sourceText = brailleParas.join(separator);
 	let cursor = 0;

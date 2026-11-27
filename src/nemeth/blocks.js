@@ -11,7 +11,7 @@
 // entries that run over onto continuation lines (25.8.2 b/c), spatially drawn
 // fractions (25.8.2 e), and several matrices side by side on one row (e.g. A*B).
 
-import { normalize } from './toLatex.js';
+import { normalize, nemethToLatexDetailed } from './toLatex.js';
 import { FUNCTIONS, OPERATORNAME_FUNCTIONS } from './symbols.js';
 
 const isFunctionName = (w) => FUNCTIONS.has(w) || OPERATORNAME_FUNCTIONS.has(w);
@@ -69,10 +69,40 @@ export function splitColumns(rows) {
 	return rows.map((r) => merged.map(([a, b]) => r.slice(a, b).trim()));
 }
 
+// Warnings that mean "this construct was opened but the text ended first".
+const UNCLOSED = /^(fraction without fraction line|unterminated )/;
+
+/** Whether a fraction, radical or grouping symbol is still open at the end of `text`. */
+function isOpen(text) {
+	const { warnings, openGroups } = nemethToLatexDetailed(text);
+	return openGroups > 0 || warnings.some((w) => UNCLOSED.test(w));
+}
+
+/**
+ * If the expression starting at lines[i] is still open at the end of that line, join the
+ * following lines until it closes. Returns { text, next }. If it never closes (e.g. the lone
+ * enlarged brace of a system of equations), only lines[i] is taken, so one unmatched symbol
+ * can't swallow the rest of the block.
+ */
+function joinWrapped(lines, i) {
+	let text = lines[i];
+	if (isOpen(text)) {
+		for (let j = i + 1; j < lines.length; j++) {
+			if (lines[j].trim() === '') continue;
+			// A line break stands for a blank cell.
+			text = `${text.trimEnd()} ${lines[j].trimStart()}`;
+			if (!isOpen(text)) return { text, next: j + 1 };
+		}
+	}
+	return { text: lines[i], next: i + 1 };
+}
+
 /**
  * Split a (possibly multi-line) Nemeth block into display-math chunks. Runs of two or
- * more array rows with the same fence become one matrix/determinant; every other line is
- * its own chunk, translated by `translate` (so callers keep their own fallback logic).
+ * more array rows with the same fence become one matrix/determinant. Lines that wrap an
+ * open fraction, radical or grouping symbol are joined into one chunk; every other line is
+ * its own chunk. Chunks are translated by `translate` (so callers keep their own fallback
+ * logic).
  * @param {string} text
  * @param {(nemeth: string) => string} translate - single-line / single-entry translator
  * @returns {string[]} LaTeX chunks (one `$$...$$` each); blank lines are dropped
@@ -100,9 +130,14 @@ export function nemethDisplayChunks(text, translate) {
 				continue;
 			}
 		}
-		const latex = lines[i].trim() === '' ? '' : translate(lines[i]);
+		if (lines[i].trim() === '') {
+			i++;
+			continue;
+		}
+		const { text: expression, next } = joinWrapped(lines, i);
+		const latex = translate(expression);
 		if (latex.trim() !== '') chunks.push(latex);
-		i++;
+		i = next;
 	}
 	return chunks;
 }
