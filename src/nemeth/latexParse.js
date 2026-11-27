@@ -17,6 +17,14 @@
 //   matrix {env, rows}           rows: Node[][][]
 //   prime {n}   fact {}   space {}
 
+// Display environments whose rows are simply successive lines of math: `&` only marks
+// alignment and `\\` ends a line.
+const LINE_ENVIRONMENTS = new Set(
+	['equation', 'align', 'gather', 'multline', 'flalign', 'eqnarray']
+		.flatMap((name) => [name, `${name}*`])
+		.concat('aligned', 'gathered', 'split')
+);
+
 export class UnsupportedLatexError extends Error {
 	constructor(what) {
 		super(`Unsupported LaTeX: ${what}`);
@@ -466,7 +474,8 @@ class P {
 	environment() {
 		const name = this.envName();
 		const kinds = { pmatrix: 'p', bmatrix: 'b', vmatrix: 'v', Vmatrix: 'V' };
-		if (!(name in kinds)) throw new UnsupportedLatexError(`environment ${name}`);
+		const isLines = LINE_ENVIRONMENTS.has(name);
+		if (!isLines && !(name in kinds)) throw new UnsupportedLatexError(`environment ${name}`);
 		const rows = [[[]]];
 		for (;;) {
 			const cell = this.seq();
@@ -489,7 +498,7 @@ class P {
 		// drop a trailing empty row produced by a final `\\`
 		const last = rows[rows.length - 1];
 		if (last.length === 1 && last[0].length === 0 && rows.length > 1) rows.pop();
-		return { t: 'matrix', env: kinds[name], rows };
+		return isLines ? { t: 'lines', rows } : { t: 'matrix', env: kinds[name], rows };
 	}
 	envName() {
 		this.skipWs();

@@ -147,6 +147,7 @@ class Parser {
 		this.s = normalize(src);
 		this.i = 0;
 		this.warnings = [];
+		this.openGroups = 0; // grouping symbols opened and not (yet) closed
 		this.last = 'none'; // kind of last atom: letter|number|func|close|op|space|none ...
 	}
 
@@ -262,6 +263,7 @@ class Parser {
 					out.unit(GROUPS[k]);
 					this.i += k.length;
 					this.last = isOpen ? 'open' : 'close';
+					this.openGroups += isOpen ? 1 : -1;
 					if (isOpen) out.hasBase = false; // a script right after an opener is a LEFT script
 					matched = true;
 					break;
@@ -853,12 +855,12 @@ function latinCapital(name) {
 /**
  * Translate ONE line of Nemeth (ASCII braille, no `_%`/`_:` switch indicators).
  * @param {string} text
- * @returns {{ latex: string, warnings: string[] }}
+ * @returns {{ latex: string, warnings: string[], openGroups: number }}
  */
 export function nemethToLatexDetailed(text) {
 	const p = new Parser(text);
 	const latex = p.seq();
-	return { latex, warnings: p.warnings };
+	return { latex, warnings: p.warnings, openGroups: p.openGroups };
 }
 
 /** Multi-line convenience: translates each line, preserving blank lines. */

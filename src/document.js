@@ -17,6 +17,8 @@ import {
 	tokens,
 	translateForward as defaultTranslateForward,
 	PARAGRAPH_SEPARATOR,
+	paragraphRanges,
+	normalizeAsciiBrailleAliases,
 	LINE_PARAGRAPH_SEPARATOR
 } from './processFile.js';
 import { latex_to_nemeth } from './brailleMap.js';
@@ -441,24 +443,45 @@ export class DualDocument {
 		}
 
 		const oldBrailleText = this.brailleText;
-		const { prefixLen, suffixLen } = diffRegion(oldBrailleText, newBrailleText);
-		const oldEditStart = prefixLen;
-		const oldEditEnd = oldBrailleText.length - suffixLen;
-
 		const nodes = this._tree.children;
-		const firstIdx = findOwningIndex(nodes, 'brailleRange', oldEditStart);
-		const lastIdx = oldEditEnd > oldEditStart ? findOwningIndex(nodes, 'brailleRange', oldEditEnd - 1) : firstIdx;
-
 		const delta = newBrailleText.length - oldBrailleText.length;
-		const regionBrailleStart = nodes[firstIdx].brailleRange.start;
-		const regionBrailleOldEnd = nodes[lastIdx].brailleRange.end;
-		const regionBrailleNewEnd = regionBrailleOldEnd + delta;
-		const regionSlice = newBrailleText.slice(regionBrailleStart, regionBrailleNewEnd);
+
+		// Which paragraphs changed is decided from the new text's own paragraph boundaries,
+		// not just from where the edit happened: typing or deleting a math block marker can
+		// merge or split paragraphs far from the caret. Skip the unchanged paragraphs at
+		// both ends and re-lex everything between them.
+		const newRanges = paragraphRanges(
+			normalizeAsciiBrailleAliases(newBrailleText),
+			this._tree.paragraphSeparator ?? PARAGRAPH_SEPARATOR
+		);
+		const unchanged = (node, range, shift) =>
+			node.brailleRange.start + shift === range.start &&
+			node.brailleRange.end + shift === range.end &&
+			oldBrailleText.slice(node.brailleRange.start, node.brailleRange.end) ===
+				newBrailleText.slice(range.start, range.end);
+		const shortest = Math.min(nodes.length, newRanges.length);
+		let head = 0;
+		while (head < shortest && unchanged(nodes[head], newRanges[head], 0)) head++;
+		let tail = 0;
+		while (
+			tail < shortest - head &&
+			unchanged(nodes[nodes.length - 1 - tail], newRanges[newRanges.length - 1 - tail], delta)
+		)
+			tail++;
+		// Both the old and the new region need at least one paragraph to splice.
+		if (head + tail === shortest) {
+			if (head > 0) head--;
+			else tail--;
+		}
+
+		const regionFirst = head;
+		const regionLast = nodes.length - 1 - tail;
+		const regionSlice = newBrailleText.slice(newRanges[head].start, newRanges[newRanges.length - 1 - tail].end);
 
 		const subtree = lex(regionSlice, this._lexOptions);
 		await subtree.to_latex(this.table, this._translate);
 
-		const replacedFirstNode = nodes[firstIdx];
+		const replacedFirstNode = nodes[regionFirst];
 		subtree.children.forEach((n, i) => {
 			n.docId = i === 0 ? replacedFirstNode.docId : this._nextDocId++;
 			n.status = 'ok';
@@ -466,11 +489,11 @@ export class DualDocument {
 			n.errorMessage = null;
 		});
 
-		const regionLatexStart = nodes[firstIdx].latexRange.start;
-		const regionLatexOldEnd = nodes[lastIdx].latexRange.end;
+		const regionLatexStart = nodes[regionFirst].latexRange.start;
+		const regionLatexOldEnd = nodes[regionLast].latexRange.end;
 		const newLatexText = this.latexText.slice(0, regionLatexStart) + subtree.latex + this.latexText.slice(regionLatexOldEnd);
 
-		nodes.splice(firstIdx, lastIdx - firstIdx + 1, ...subtree.children);
+		nodes.splice(regionFirst, regionLast - regionFirst + 1, ...subtree.children);
 		this._recomputeRanges(newBrailleText, newLatexText);
 
 		return { latexText: this.latexText, latexCursor: this.mapCursor('brailleRange', 'latexRange', cursorOffset) };
