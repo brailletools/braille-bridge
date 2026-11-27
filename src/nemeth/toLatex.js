@@ -154,6 +154,15 @@ class Parser {
 	warn(msg) {
 		this.warnings.push(`${msg} (at ${this.i}: ${JSON.stringify(this.s.slice(this.i, this.i + 8))})`);
 	}
+	/** Snapshot of what a speculative parse can change; call the result to roll it back. */
+	checkpoint() {
+		const { i, last, openGroups } = this;
+		const warnLen = this.warnings.length;
+		return () => {
+			Object.assign(this, { i, last, openGroups });
+			this.warnings.length = warnLen;
+		};
+	}
 	at(str, k = this.i) {
 		return this.s.startsWith(str, k);
 	}
@@ -263,7 +272,9 @@ class Parser {
 					out.unit(GROUPS[k]);
 					this.i += k.length;
 					this.last = isOpen ? 'open' : 'close';
-					this.openGroups += isOpen ? 1 : -1;
+					// A stray closer must not cancel out a later, still-unclosed opener.
+					if (isOpen) this.openGroups++;
+					else if (this.openGroups > 0) this.openGroups--;
 					if (isOpen) out.hasBase = false; // a script right after an opener is a LEFT script
 					matched = true;
 					break;
@@ -431,18 +442,14 @@ class Parser {
 		let index = null;
 		if (s[j] === '<') {
 			// index of radical: < index >
-			const saveI = this.i;
-			const warnLen = this.warnings.length;
-			const lastSave = this.last;
+			const rollback = this.checkpoint();
 			this.i = j + 1;
 			const idx = this.seq(['>'], base);
 			if (this.at('>')) {
 				index = idx;
 				j = this.i;
 			} else {
-				this.i = saveI;
-				this.warnings.length = warnLen;
-				this.last = lastSave;
+				rollback();
 				return false;
 			}
 		}
@@ -475,9 +482,7 @@ class Parser {
 		}
 		if (!sign || s[j + sign[0].length] !== '%') return false;
 		const isFn = /^[a-z]/.test(sign[0]);
-		const save = this.i;
-		const warnLen = this.warnings.length;
-		const lastSave = this.last;
+		const rollback = this.checkpoint();
 		this.i = j + sign[0].length + 1;
 		const lower = this.seq(['<', ']'], base);
 		let upper = null;
@@ -498,16 +503,13 @@ class Parser {
 			this.last = 'unit';
 			return true;
 		}
-		this.i = save;
-		this.warnings.length = warnLen;
-		this.last = lastSave;
+		rollback();
 		return false;
 	}
 
 	/** `"` expression `<` modifier `]`  /  `%` modifier `]` */
 	tryModified(out, base) {
-		const save = this.i;
-		const warnLen = this.warnings.length;
+		const rollback = this.checkpoint();
 		this.i++; // consume multipurpose indicator
 		const inner = this.seq(['<', '%'], base);
 		const mod = this.readModifier();
@@ -516,8 +518,7 @@ class Parser {
 			this.last = 'close';
 			return true;
 		}
-		this.i = save;
-		this.warnings.length = warnLen;
+		rollback();
 		return false;
 	}
 	/** After one symbol: `x<:]` (bar over x). */
@@ -555,9 +556,7 @@ class Parser {
 	// ---------------- binomial coefficient (15.6) ----------------
 	/** `(` upper `%` lower `)` -- directly-under indicator with no modifier symbol. */
 	tryBinomial(out, base) {
-		const save = this.i;
-		const warnLen = this.warnings.length;
-		const lastSave = this.last;
+		const rollback = this.checkpoint();
 		this.i++;
 		const upper = this.seq(['%', ')'], base);
 		if (this.at('%') && !this.readModifierPeek()) {
@@ -570,9 +569,7 @@ class Parser {
 				return true;
 			}
 		}
-		this.i = save;
-		this.warnings.length = warnLen;
-		this.last = lastSave;
+		rollback();
 		return false;
 	}
 	readModifierPeek() {

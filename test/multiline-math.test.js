@@ -21,6 +21,25 @@ test('paragraphRanges: an unclosed block does not swallow what follows', () => {
 	assert.deepEqual(slices('_% x\n\ntext\n\n_% y _:', '\n\n'), ['_% x', 'text', '_% y _:']);
 });
 
+test('a stray closing symbol does not hide a later unclosed one', () => {
+	assert.equal(nemeth_display_lines(')(a+\nb)').length, 1);
+});
+
+test('grouping symbols seen only during a backtracked parse are not counted', () => {
+	// `(` first tries to parse as a binomial, backs out, and is then read again.
+	assert.equal(nemeth_display_lines('((a))\ny .k 2').length, 2);
+	assert.equal(nemeth_display_lines('((a+\nb))\ny .k 2').length, 2);
+});
+
+test('paragraphRanges: several blocks, including nested ones', () => {
+	assert.deepEqual(slices('_% a\n_% b\nc _:\nd _:\ne\n_% f\ng _:\nh', '\n'), [
+		'_% a\n_% b\nc _:\nd _:',
+		'e',
+		'_% f\ng _:',
+		'h'
+	]);
+});
+
 for (const lines of [false, true]) {
 	test(`one equation per line renders as display math (linesAreParagraphs=${lines})`, async () => {
 		const doc = await load('_%\nx .k 1\ny .k 2\n_:', lines);
