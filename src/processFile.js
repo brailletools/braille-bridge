@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { nemeth_to_latex, nemeth_display_lines, latex_to_nemeth, ascii2Braille } from './brailleMap.js';
+import { escapeLatexProse } from './latexDocument.js';
 
 let asyncLiblouis = null;
 let liblouisReadyPromise = null;
@@ -524,7 +525,7 @@ class Element {
 			case tokens.UNDERLINE: {
 				const [open, close] = RENDER_SPEC[this.token].latex;
 				this.add_latex(open);
-				if (this.value) this.add_latex(await this.translate_value(table, translate));
+				if (this.value) this.add_latex(escapeLatexProse(await this.translate_value(table, translate)));
 				for (const child of this.children) {
 					try {
 						this.add_latex(await child.to_latex(table, translate));
@@ -537,7 +538,7 @@ class Element {
 				break;
 			}
 			case tokens.STRING:
-				if (this.value) this.add_latex(await this.translate_value(table, translate));
+				if (this.value) this.add_latex(escapeLatexProse(await this.translate_value(table, translate)));
 				break;
 			default:
 				console.info('Unknown token: ' + this.token);
