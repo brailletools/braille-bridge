@@ -96,7 +96,7 @@ const PROSE_TEXT = { '\\textbackslash{}': '\\', '\\textasciicircum{}': '^', '\\t
  * @param {string} latex
  */
 export function latexProseToText(latex) {
-	return latex.replace(PROSE_TOKEN, (token) => {
+	return String(latex ?? '').replace(PROSE_TOKEN, (token) => {
 		if (token in PROSE_TEXT) return PROSE_TEXT[token];
 		if (token.length === 2 && token[0] === '\\') return token[1]; // \& \{ \} \$ ...
 		return ''; // a wrapper opening, or the bare } that closes one
